@@ -245,17 +245,28 @@ impl Player {
                         )
                         .truncate(),
                     );
-                    for label in [&track.artist, &track.album] {
-                        if !label.is_empty() {
-                            ui.add(egui::Label::new(RichText::new(label).weak()).truncate());
-                        }
+                    let credits = [track.artist.as_str(), track.album.as_str()]
+                        .into_iter()
+                        .filter(|label| !label.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    if !credits.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(credits).weak()).truncate());
+                    }
+                    if let Some(line) = media.current_lyric() {
+                        ui.label(RichText::new(line).size(14.0 * scale).color(accent(true)));
+                    }
+                    if let Some(delay) = media.next_lyric_update() {
+                        ui.ctx().request_repaint_after(delay);
                     }
                 });
             });
             if let Err(error) = self.playback(ui, media, &track) {
                 ui.colored_label(ui.visuals().error_fg_color, error);
             }
-            lyric_view(ui, media, 58.0 * scale);
+            if media.has_lyrics() {
+                ui.collapsing("全部歌词", |ui| lyric_view(ui, media, 80.0 * scale));
+            }
         } else {
             self.artwork = None;
             self.dragging_to = None;
