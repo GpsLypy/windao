@@ -292,8 +292,8 @@ impl Focus {
 #[serde(rename_all = "lowercase")]
 pub enum Appearance {
     Light,
-    #[default]
     Dark,
+    #[default]
     System,
 }
 
@@ -319,7 +319,7 @@ impl Default for Settings {
             always_on_top: true,
             reduced_motion: false,
             open_on_hover: true,
-            appearance: Appearance::Dark,
+            appearance: Appearance::System,
             display_device: None,
             dock: Default::default(),
             reminders: true,

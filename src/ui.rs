@@ -2,8 +2,8 @@ use std::{path::Path, sync::Arc};
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 use eframe::egui::{
-    self, Align, Button, Color32, FontData, FontDefinitions, FontFamily, FontId, Frame, Layout,
-    Margin, Rect, RichText, ScrollArea, Stroke, StrokeKind, TextEdit, TextStyle, Ui, Visuals, vec2,
+    self, Button, Color32, FontData, FontDefinitions, FontFamily, FontId, Frame, Margin, Rect,
+    RichText, ScrollArea, Stroke, StrokeKind, TextEdit, TextStyle, Ui, Visuals, vec2,
 };
 
 use crate::dock::CapsulePage;
@@ -23,6 +23,7 @@ mod lunar_calendar;
 mod music;
 #[cfg(windows)]
 mod native_tools;
+mod navigation;
 mod notes_extra;
 #[cfg(any(windows, test))]
 mod plugins;
@@ -33,16 +34,11 @@ mod system_metrics;
 mod tasks;
 #[cfg(test)]
 mod tests;
+mod today;
 #[cfg(any(windows, test))]
 mod weather;
 #[cfg(windows)]
 mod wireless;
-
-const BLUE: Color32 = Color32::from_rgb(131, 168, 255);
-const INK: Color32 = Color32::from_rgb(245, 245, 247);
-const MUTED: Color32 = Color32::from_rgb(161, 161, 170);
-const BLACK: Color32 = Color32::from_rgb(9, 9, 11);
-const SIDEBAR: Color32 = Color32::from_rgb(25, 25, 28);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Page {
@@ -149,6 +145,8 @@ pub enum ShellAction {
     SetPinned(bool),
     #[cfg_attr(not(windows), allow(dead_code))]
     OpenWorkbench(Page),
+    #[cfg_attr(not(windows), allow(dead_code))]
+    OpenCalendar(NaiveDate),
     #[cfg_attr(not(windows), allow(dead_code))]
     CompleteTask(uuid::Uuid),
     ToggleFocus,
@@ -285,23 +283,31 @@ fn style(style: &mut egui::Style) {
         Visuals::light()
     };
     if dark {
-        visuals.panel_fill = Color32::from_rgb(17, 17, 19);
-        visuals.window_fill = Color32::from_rgb(28, 28, 30);
+        visuals.panel_fill = Color32::from_rgb(32, 33, 36);
+        visuals.window_fill = Color32::from_rgb(43, 44, 48);
         visuals.faint_bg_color = Color32::from_rgb(36, 36, 40);
-        visuals.extreme_bg_color = BLACK;
-        visuals.override_text_color = Some(INK);
-        visuals.widgets.noninteractive.fg_stroke.color = MUTED;
+        visuals.extreme_bg_color = Color32::from_rgb(20, 21, 23);
+        visuals.override_text_color = Some(Color32::from_rgb(245, 245, 247));
+        visuals.weak_text_color = Some(Color32::from_rgb(171, 175, 184));
+        visuals.widgets.noninteractive.bg_stroke =
+            Stroke::new(1.0_f32, Color32::from_rgb(70, 72, 78));
+        visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(51, 52, 55);
+        visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(64, 65, 68);
     } else {
-        visuals.panel_fill = Color32::from_rgb(246, 247, 249);
+        visuals.panel_fill = Color32::from_rgb(244, 245, 247);
         visuals.window_fill = Color32::WHITE;
         visuals.faint_bg_color = Color32::from_rgb(236, 238, 242);
         visuals.extreme_bg_color = Color32::WHITE;
+        visuals.override_text_color = Some(Color32::from_rgb(32, 33, 36));
+        visuals.weak_text_color = Some(Color32::from_rgb(96, 100, 109));
+        visuals.widgets.noninteractive.bg_stroke =
+            Stroke::new(1.0_f32, Color32::from_rgb(218, 221, 227));
     }
     visuals.hyperlink_color = accent;
     visuals.selection.bg_fill = if dark {
-        Color32::from_rgb(44, 55, 80)
+        Color32::from_rgb(46, 58, 74)
     } else {
-        Color32::from_rgb(220, 234, 255)
+        Color32::from_rgb(205, 222, 244)
     };
     visuals.selection.stroke = Stroke::new(1.5_f32, accent);
     visuals.widgets.hovered.bg_stroke.color = accent;
@@ -339,19 +345,21 @@ fn style(style: &mut egui::Style) {
 
 fn accent(dark: bool) -> Color32 {
     if dark {
-        BLUE
+        Color32::from_rgb(91, 141, 239)
     } else {
         Color32::from_rgb(0, 91, 198)
     }
 }
 
 fn primary(ui: &mut Ui, label: &str) -> egui::Response {
-    let fill = if ui.visuals().dark_mode {
-        Color32::from_rgb(40, 87, 177)
+    let dark = ui.visuals().dark_mode;
+    let color = if dark {
+        Color32::from_gray(27)
     } else {
-        accent(false)
+        Color32::WHITE
     };
-    let response = ui.add(Button::new(RichText::new(label).color(Color32::WHITE)).fill(fill));
+    let response =
+        ui.add(Button::new(RichText::new(label).strong().color(color)).fill(accent(dark)));
     if response.has_focus() || response.hovered() {
         ui.painter().rect_stroke(
             response.rect,
@@ -371,7 +379,7 @@ fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
             ui.visuals().widgets.noninteractive.bg_stroke.color,
         ))
         .corner_radius(14)
-        .inner_margin(Margin::same(16))
+        .inner_margin(Margin::same(20))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             content(ui);
@@ -379,17 +387,12 @@ fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
 }
 
 fn title(ui: &mut Ui, text: &str) {
-    ui.heading(text);
-    ui.add_space(6.0);
-}
-
-fn page_shortcut_hint(ui: &mut Ui) {
-    ui.weak(RichText::new("Ctrl+Tab 切换页面").small())
-        .on_hover_text("Ctrl+Tab 下一页 · Ctrl+Shift+Tab 上一页");
+    ui.label(RichText::new(text).size(27.0).strong());
+    ui.add_space(8.0);
 }
 
 fn subhead(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(16.0).strong());
+    ui.label(RichText::new(text).size(15.0).strong());
 }
 
 fn local_timestamp(timestamp: i64) -> Option<DateTime<Local>> {
@@ -435,6 +438,8 @@ fn field(ui: &mut Ui, label: &str, value: &mut String, hint: &str, max: usize) -
 #[derive(Default)]
 pub struct Workbench {
     pub page: Page,
+    brand_icon: Option<egui::TextureHandle>,
+    navigation_query: String,
     calendar: calendar::Calendar,
     tasks: tasks::Tasks,
     focus: focus::Timer,
@@ -469,6 +474,11 @@ pub struct Workbench {
 }
 
 impl Workbench {
+    #[cfg(windows)]
+    pub fn select_calendar_date(&mut self, date: NaiveDate) {
+        self.calendar.select_date(date);
+    }
+
     #[cfg(windows)]
     pub fn update_taskbar_status(&mut self, active: bool) -> bool {
         std::mem::replace(&mut self.taskbar_notifications_active, active) != active
@@ -515,47 +525,7 @@ impl Workbench {
         };
         root.set_style(root.ctx().style_of(theme));
         self.handle_page_shortcut(root);
-        if root.available_width() >= 740.0 {
-            egui::Panel::left("workbench-sidebar")
-                .exact_size(164.0)
-                .resizable(false)
-                .frame(Frame::new().inner_margin(Margin::same(14)).fill(if dark {
-                    SIDEBAR
-                } else {
-                    Color32::from_rgb(236, 238, 242)
-                }))
-                .show_inside(root, |ui| {
-                    ui.label(RichText::new("NotchCalendar").size(17.0).strong());
-                    page_shortcut_hint(ui);
-                    ui.add_space(8.0);
-                    ScrollArea::vertical()
-                        .id_salt("workbench-pages")
-                        .show(ui, |ui| {
-                            for &page in Page::ALL {
-                                let button = Button::new(page.title()).selected(self.page == page);
-                                if ui.add_sized([128.0, 34.0], button).clicked() {
-                                    self.navigate(page);
-                                }
-                            }
-                        });
-                });
-        } else {
-            egui::Panel::top("workbench-navigation")
-                .frame(Frame::new().inner_margin(Margin::same(10)))
-                .show_inside(root, |ui| {
-                    page_shortcut_hint(ui);
-                    ui.horizontal_wrapped(|ui| {
-                        for &page in Page::ALL {
-                            if ui
-                                .selectable_label(self.page == page, page.title())
-                                .clicked()
-                            {
-                                self.navigate(page);
-                            }
-                        }
-                    });
-                });
-        }
+        self.navigation(root);
         if let Some(notice) = &self.notice {
             let mut hide = false;
             egui::Panel::bottom("workbench-notice")
@@ -584,7 +554,12 @@ impl Workbench {
             }
         }
         egui::CentralPanel::default()
-            .frame(Frame::central_panel(root.style()).inner_margin(Margin::same(22)))
+            .frame(Frame::central_panel(root.style()).inner_margin(Margin {
+                left: 28,
+                right: 28,
+                top: 32,
+                bottom: 22,
+            }))
             .show_inside(root, |ui| {
                 ScrollArea::vertical()
                     .auto_shrink([false; 2])
@@ -768,72 +743,6 @@ impl Workbench {
             self.page = page;
             self.notice = None;
         }
-    }
-
-    fn today(&mut self, ui: &mut Ui, store: &Store) {
-        let now = Local::now();
-        let date = now.date_naive();
-        let state = store.state();
-        title(ui, "今天");
-        ui.label(
-            RichText::new(format!(
-                "{}　{}",
-                date.format("%Y年%-m月%-d日"),
-                calendar::weekday(date)
-            ))
-            .size(19.0),
-        );
-        if let Some(caption) = calendar::lunar_caption(date) {
-            ui.weak(caption);
-        }
-        ui.add_space(8.0);
-
-        card(ui, |ui| {
-            if section_link(ui, "日程", "打开日历") {
-                self.navigate(Page::Calendar);
-            }
-            let mut events: Vec<_> = state
-                .events
-                .iter()
-                .filter(|event| calendar::on_date(event, date))
-                .collect();
-            events.sort_by_key(|event| (!event.all_day, event.start_at));
-            if events.is_empty() {
-                ui.weak("今天没有日程");
-            }
-            for event in events.into_iter().take(4) {
-                ui.horizontal(|ui| {
-                    ui.colored_label(accent(ui.visuals().dark_mode), calendar::event_time(event));
-                    ui.label(&event.title);
-                });
-            }
-        });
-        card(ui, |ui| {
-            if section_link(ui, "待办", "打开待办") {
-                self.navigate(Page::Tasks);
-            }
-            let mut tasks: Vec<_> = state
-                .tasks
-                .iter()
-                .filter(|task| task.is_actionable_on(date))
-                .collect();
-            tasks.sort_by_key(|task| task.due_at_on(date).unwrap_or(i64::MAX));
-            if tasks.is_empty() {
-                ui.weak("暂无待处理待办");
-            }
-            for task in tasks.into_iter().take(4) {
-                ui.label(&task.title);
-            }
-        });
-        card(ui, |ui| {
-            if section_link(ui, "专注", "打开专注") {
-                self.navigate(Page::Focus);
-            }
-            ui.label(focus::status(&state.focus));
-            ui.monospace(focus::digits(
-                state.focus.seconds_left(now.timestamp_millis()),
-            ));
-        });
     }
 
     fn notes(&mut self, ui: &mut Ui, store: &mut Store) {
@@ -1036,17 +945,6 @@ impl Workbench {
             }
         });
     }
-}
-
-fn section_link(ui: &mut Ui, heading: &str, link: &str) -> bool {
-    ui.horizontal(|ui| {
-        subhead(ui, heading);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.button(link).clicked()
-        })
-        .inner
-    })
-    .inner
 }
 
 fn appearance_label(appearance: &Appearance) -> &'static str {

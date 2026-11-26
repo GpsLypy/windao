@@ -2,9 +2,11 @@ use chrono::{Datelike, Days, Local, Months, NaiveDate, TimeZone, Utc};
 use eframe::egui::{self, Button, RichText, Ui, vec2};
 use uuid::Uuid;
 
+#[cfg(windows)]
+use super::card;
 use super::{
-    accent, card, display_time, field, local_timestamp, parse_date, parse_datetime, primary,
-    subhead, title,
+    accent, display_time, field, local_timestamp, parse_date, parse_datetime, primary, subhead,
+    title,
 };
 use crate::workspace::{Event, Store};
 #[cfg(windows)]
@@ -84,6 +86,22 @@ impl Default for Calendar {
 }
 
 impl Calendar {
+    pub(super) fn selected_date(&self) -> NaiveDate {
+        self.date
+    }
+
+    pub(super) fn select_date(&mut self, date: NaiveDate) {
+        self.date = date;
+        self.delete = None;
+    }
+
+    pub(super) fn new_event(&mut self, date: NaiveDate) {
+        if self.draft.is_none() {
+            self.select_date(date);
+            self.draft = Some(EventDraft::new(date));
+        }
+    }
+
     pub(super) fn show(
         &mut self,
         ui: &mut Ui,
@@ -93,13 +111,21 @@ impl Calendar {
     ) {
         let today = Local::now().date_naive();
         title(ui, "日历");
+        if ui.available_width() >= 450.0 && self.draft.is_none() {
+            ui.columns(2, |columns| {
+                self.agenda(&mut columns[0], store, notice);
+                self.month(&mut columns[1], &store.state().events, today, None);
+            });
+        } else {
+            self.agenda(ui, store, notice);
+            ui.add_space(6.0);
+            self.month(ui, &store.state().events, today, None);
+        }
         #[cfg(windows)]
         {
-            self.exchange(ui, store, notice);
             self.sources.show(ui, store, sync, notice);
+            self.exchange(ui, store, notice);
         }
-        card(ui, |ui| self.month(ui, &store.state().events, today));
-        card(ui, |ui| self.agenda(ui, store, notice));
     }
 
     #[cfg(windows)]
@@ -178,39 +204,54 @@ impl Calendar {
         });
     }
 
-    fn month(&mut self, ui: &mut Ui, events: &[Event], today: NaiveDate) {
+    pub(super) fn month(
+        &mut self,
+        ui: &mut Ui,
+        events: &[Event],
+        today: NaiveDate,
+        capsule_scale: Option<f32>,
+    ) {
+        let scale = capsule_scale.unwrap_or(1.0);
+        let compact = capsule_scale.is_some();
         ui.horizontal_wrapped(|ui| {
             subhead(ui, &self.date.format("%Y年%-m月").to_string());
-            if ui.button("上个月").clicked() {
+            if ui.button("‹").on_hover_text("上个月").clicked() {
                 self.date = self
                     .date
                     .checked_sub_months(Months::new(1))
                     .unwrap_or(self.date);
             }
-            if ui.button("下个月").clicked() {
+            if ui.button("›").on_hover_text("下个月").clicked() {
                 self.date = self
                     .date
                     .checked_add_months(Months::new(1))
                     .unwrap_or(self.date);
             }
-            if ui.button("回到今天").clicked() {
+            if ui.button("今天").clicked() {
                 self.date = today;
             }
         });
         let first = self.date.with_day(1).unwrap_or(self.date);
-        let offset = i64::from(first.weekday().num_days_from_monday());
+        let offset = i64::from(first.weekday().num_days_from_sunday());
         let next_month = first.checked_add_months(Months::new(1)).unwrap_or(first);
         let days = (next_month - first).num_days();
         let weeks = (offset + days + 6) / 7;
+        let gap = if compact { 2.0 * scale } else { 4.0 };
         let size = vec2(
-            ((ui.available_width() - 36.0) / 7.0).clamp(26.0, 74.0),
-            34.0,
+            ((ui.available_width() - 6.0 * gap) / 7.0).max(18.0 * scale),
+            if compact { 22.0 * scale } else { 24.0 },
         );
         egui::Grid::new("month-grid")
-            .spacing(vec2(6.0, 5.0))
+            .min_col_width(0.0)
+            .min_row_height(0.0)
+            .spacing(vec2(gap, if compact { scale } else { 3.0 }))
             .show(ui, |ui| {
-                for label in WEEKDAYS {
-                    ui.weak(label);
+                for label in ["日", "一", "二", "三", "四", "五", "六"] {
+                    ui.add_sized(
+                        vec2(size.x, if compact { 16.0 * scale } else { 20.0 }),
+                        egui::Label::new(RichText::new(label).small().weak())
+                            .halign(egui::Align::Center),
+                    );
                 }
                 ui.end_row();
                 for column in 0..weeks {
@@ -224,30 +265,73 @@ impl Calendar {
                             .checked_add_days(Days::new(position as u64))
                             .unwrap_or(first);
                         let marked = events.iter().any(|event| on_date(event, date));
-                        let color = if date == today {
-                            accent(ui.visuals().dark_mode)
+                        let selected = date == self.date;
+                        let color = if ui.visuals().dark_mode {
+                            egui::Color32::from_rgb(239, 174, 158)
+                        } else {
+                            egui::Color32::from_rgb(154, 66, 47)
+                        };
+                        let (rect, mut response) =
+                            ui.allocate_exact_size(size, egui::Sense::click());
+                        let center = rect.center() - vec2(0.0, scale);
+                        if selected || response.hovered() {
+                            ui.painter().circle_filled(
+                                center,
+                                10.0 * scale,
+                                if selected {
+                                    color
+                                } else {
+                                    ui.visuals().widgets.hovered.weak_bg_fill
+                                },
+                            );
+                        }
+                        if date == today || response.has_focus() {
+                            ui.painter().circle_stroke(
+                                center,
+                                11.0 * scale,
+                                egui::Stroke::new(1.0_f32, color),
+                            );
+                        }
+                        let ink = if selected && ui.visuals().dark_mode {
+                            egui::Color32::BLACK
+                        } else if selected {
+                            egui::Color32::WHITE
                         } else {
                             ui.visuals().text_color()
                         };
-                        let caption = if marked {
-                            format!("{} ·", date.day())
-                        } else {
-                            date.day().to_string()
-                        };
-                        let mut response = ui.add_sized(
-                            size,
-                            Button::new(RichText::new(caption).color(color))
-                                .selected(date == self.date),
+                        ui.painter().text(
+                            center,
+                            egui::Align2::CENTER_CENTER,
+                            date.day().to_string(),
+                            egui::FontId::proportional(13.0 * scale),
+                            ink,
                         );
+                        response.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::Button,
+                                true,
+                                selected,
+                                date.to_string(),
+                            )
+                        });
+                        if marked {
+                            ui.painter().circle_filled(
+                                response.rect.center_bottom() - vec2(0.0, 2.0 * scale),
+                                1.5 * scale,
+                                color,
+                            );
+                        }
                         let mut tooltip = date.format("%Y年%-m月%-d日").to_string();
+                        if marked {
+                            tooltip.push_str(" · 有日程");
+                        }
                         if let Some(lunar) = lunar_caption(date) {
                             tooltip.push('\n');
                             tooltip.push_str(&lunar);
                         }
                         response = response.on_hover_text(tooltip);
                         if response.clicked() {
-                            self.date = date;
-                            self.delete = None;
+                            self.select_date(date);
                         }
                     }
                     ui.end_row();
@@ -262,14 +346,17 @@ impl Calendar {
         notice: &mut Option<Result<String, String>>,
     ) {
         ui.horizontal_wrapped(|ui| {
-            subhead(
-                ui,
-                &format!("{}　{}", self.date.format("%-m月%-d日"), weekday(self.date)),
+            ui.label(
+                RichText::new(self.date.day().to_string())
+                    .size(27.0)
+                    .strong(),
             );
+            ui.label(weekday(self.date));
             let previous = self.date.pred_opt();
             let next = self.date.succ_opt();
             if ui
-                .add_enabled(previous.is_some(), Button::new("前一天"))
+                .add_enabled(previous.is_some(), Button::new("‹"))
+                .on_hover_text("前一天")
                 .clicked()
                 && let Some(previous) = previous
             {
@@ -277,7 +364,8 @@ impl Calendar {
                 self.delete = None;
             }
             if ui
-                .add_enabled(next.is_some(), Button::new("后一天"))
+                .add_enabled(next.is_some(), Button::new("›"))
+                .on_hover_text("后一天")
                 .clicked()
                 && let Some(next) = next
             {
@@ -285,12 +373,14 @@ impl Calendar {
                 self.delete = None;
             }
             if self.draft.is_none() && primary(ui, "添加日程").clicked() {
-                self.draft = Some(EventDraft::new(self.date));
+                self.new_event(self.date);
             }
         });
-        if let Some(caption) = lunar_caption(self.date) {
-            ui.weak(caption);
-        }
+        ui.weak(format!(
+            "{}  {}",
+            self.date.format("%Y年%-m月"),
+            lunar_caption(self.date).unwrap_or_default()
+        ));
         if let Some(draft) = self.draft.as_mut() {
             let result = draft.show(ui);
             match result {

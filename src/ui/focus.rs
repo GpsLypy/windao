@@ -7,7 +7,7 @@ use chrono::Local;
 use eframe::egui::{self, FontId, RichText, Stroke, Ui, vec2};
 use uuid::Uuid;
 
-use super::{accent, card, display_time, field, primary, subhead, title};
+use super::{card, display_time, field, primary, subhead, title};
 use crate::workspace::{Focus, FocusKind, HEALTH_INTERVAL, HealthKind, Store};
 
 #[derive(Default)]
@@ -64,27 +64,38 @@ impl Timer {
             self.reset_confirmation = None;
         }
         let mut action = None;
-        card(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                dial(ui, seconds, focus.duration_minutes);
-                ui.label(status(focus));
-                if session.is_some() && !focus.label.is_empty() {
-                    ui.weak(&focus.label);
-                }
-                ui.add_space(8.0);
-            });
+        let duration = if session.is_some() {
+            focus.duration_minutes
+        } else {
+            configured.minutes
+        };
+        let remaining = if session.is_some() {
+            seconds
+        } else {
+            duration * 60
+        };
+        let kind = if session.is_some() {
+            focus.kind
+        } else {
+            configured.kind
+        };
+        let tint = session_color(ui.visuals().dark_mode, kind, duration);
+        let mut controls = |ui: &mut Ui| {
             if session.is_none() {
                 ui.horizontal_wrapped(|ui| {
                     for (minutes, kind, text) in [
-                        (25, FocusKind::Focus, "25 分钟"),
-                        (50, FocusKind::Focus, "50 分钟"),
-                        (90, FocusKind::Focus, "90 分钟"),
+                        (45, FocusKind::Focus, "深度工作 45 分钟"),
+                        (25, FocusKind::Focus, "专注 25 分钟"),
                         (5, FocusKind::Break, "休息 5 分钟"),
                     ] {
                         if ui
                             .selectable_label(
                                 configured.minutes == minutes && configured.kind == kind,
-                                text,
+                                RichText::new(text).color(session_color(
+                                    ui.visuals().dark_mode,
+                                    kind,
+                                    minutes,
+                                )),
                             )
                             .clicked()
                         {
@@ -105,7 +116,21 @@ impl Timer {
                 if configured.kind == FocusKind::Focus {
                     field(ui, "专注目标", &mut configured.label, "可选", 240);
                 }
-                if primary(ui, "开始计时").clicked() {
+                let fill = tint;
+                let ink = if ui.visuals().dark_mode {
+                    egui::Color32::BLACK
+                } else {
+                    egui::Color32::WHITE
+                };
+                if ui
+                    .add_sized(
+                        vec2(ui.available_width(), 29.0),
+                        egui::Button::new(RichText::new("▶  开始").color(ink))
+                            .fill(fill)
+                            .corner_radius(15),
+                    )
+                    .clicked()
+                {
                     action = Some(Action::Start);
                 }
             } else {
@@ -129,7 +154,25 @@ impl Timer {
                     }
                 });
             }
-        });
+        };
+        let label = status(focus);
+        if ui.available_width() >= 385.0 {
+            ui.horizontal_top(|ui| {
+                dial(ui, remaining, duration, label, tint, 146.0);
+                ui.add_space(12.0);
+                ui.vertical(|ui| {
+                    if session.is_some() && !focus.label.is_empty() {
+                        subhead(ui, &focus.label);
+                    }
+                    controls(ui);
+                });
+            });
+        } else {
+            ui.vertical_centered(|ui| {
+                dial(ui, remaining, duration, label, tint, 146.0);
+            });
+            controls(ui);
+        }
         if let Some(action) = action {
             let now = now.timestamp_millis();
             let result = store.update(|state| {
@@ -271,38 +314,77 @@ enum Action {
     Reset,
 }
 
-fn dial(ui: &mut Ui, seconds: u32, duration: u32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(156.0, 156.0), egui::Sense::hover());
+pub(super) fn session_color(dark: bool, kind: FocusKind, minutes: u32) -> egui::Color32 {
+    let rgb = match (dark, kind, minutes >= 45) {
+        (true, FocusKind::Break, _) => [155, 214, 186],
+        (false, FocusKind::Break, _) => [40, 116, 81],
+        (true, FocusKind::Focus, true) => [237, 168, 115],
+        (false, FocusKind::Focus, true) => [159, 79, 30],
+        (true, FocusKind::Focus, false) => [145, 181, 239],
+        (false, FocusKind::Focus, false) => [55, 103, 175],
+    };
+    egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+}
+
+pub(super) fn dial(
+    ui: &mut Ui,
+    seconds: u32,
+    duration: u32,
+    status: &str,
+    tint: egui::Color32,
+    side: f32,
+) {
+    let scale = side / 146.0;
+    let (rect, response) = ui.allocate_exact_size(vec2(side, side), egui::Sense::hover());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Label,
+            true,
+            format!("{status} {}", digits(seconds)),
+        )
+    });
     let center = rect.center();
     let radius = rect.width() * 0.46;
     ui.painter().circle_stroke(
         center,
         radius,
-        Stroke::new(3.0_f32, ui.visuals().widgets.inactive.bg_stroke.color),
+        Stroke::new(
+            3.0 * scale,
+            if ui.visuals().dark_mode {
+                egui::Color32::from_gray(72)
+            } else {
+                egui::Color32::from_gray(195)
+            },
+        ),
     );
     let fraction = if duration == 0 {
         0.0
     } else {
-        (seconds as f32 / (duration * 60) as f32).min(1.0)
+        (1.0 - seconds as f32 / (duration * 60) as f32).clamp(0.015, 1.0)
     };
     let point_count = (72.0 * fraction).ceil() as u32;
-    if point_count >= 2 {
+    if point_count > 0 {
         let points = (0..=point_count)
             .map(|index| {
                 let angle = index as f32 / point_count as f32 * TAU * fraction - FRAC_PI_2;
                 center + vec2(angle.cos(), angle.sin()) * radius
             })
             .collect();
-        ui.painter().add(egui::Shape::line(
-            points,
-            Stroke::new(3.0_f32, accent(ui.visuals().dark_mode)),
-        ));
+        ui.painter()
+            .add(egui::Shape::line(points, Stroke::new(3.0_f32, tint)));
     }
     ui.painter().text(
-        center,
+        center - vec2(0.0, 8.0) * scale,
         egui::Align2::CENTER_CENTER,
         digits(seconds),
-        FontId::monospace(34.0),
+        FontId::monospace(29.0 * scale),
         ui.visuals().text_color(),
+    );
+    ui.painter().text(
+        center + vec2(0.0, 18.0) * scale,
+        egui::Align2::CENTER_CENTER,
+        status,
+        FontId::proportional(12.0 * scale),
+        ui.visuals().weak_text_color(),
     );
 }

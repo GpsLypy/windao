@@ -513,6 +513,10 @@ impl Desktop {
             ShellAction::Collapse => self.set_expanded(false, false),
             ShellAction::SetPinned(value) => self.pinned = value,
             ShellAction::OpenWorkbench(page) => self.open_workbench(page),
+            ShellAction::OpenCalendar(date) => {
+                self.workbench.select_calendar_date(date);
+                self.open_workbench(Page::Calendar);
+            }
             ShellAction::CompleteTask(id) => {
                 let time = chrono::Local::now();
                 let result = self.store.update(|state| {

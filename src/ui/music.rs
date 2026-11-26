@@ -33,12 +33,19 @@ impl Player {
                     }
                 }
                 Status::Checking => {
-                    ui.spinner();
-                    ui.weak("正在读取 Windows 媒体会话");
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.weak("正在读取 Windows 媒体会话");
+                    });
                 }
                 Status::NoSession => {
-                    ui.label("暂无播放会话");
-                    ui.weak("在支持 Windows 系统媒体控制的应用中播放音频。");
+                    ui.horizontal(|ui| {
+                        record_sleeve(ui, 72.0);
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new("暂无播放会话").size(18.0).strong());
+                            ui.weak("在支持 Windows 媒体控制的播放器中播放音乐。");
+                        });
+                    });
                 }
                 Status::Error(error) => {
                     ui.colored_label(ui.visuals().error_fg_color, error);
@@ -47,6 +54,7 @@ impl Player {
             if let Some(error) = media.command_error() {
                 ui.colored_label(ui.visuals().error_fg_color, error);
             }
+            ui.separator();
             if ui.button("刷新播放信息").clicked() {
                 media.refresh();
             }
@@ -60,79 +68,114 @@ impl Player {
         track: Arc<Snapshot>,
     ) -> Result<(), String> {
         ui.horizontal(|ui| {
-            let size = vec2(92.0, 92.0);
-            if let Some(art) = &track.artwork {
-                let changed = self
-                    .artwork
-                    .as_ref()
-                    .is_none_or(|(loaded, _)| !Arc::ptr_eq(loaded, art));
-                if changed {
-                    let texture = ui.ctx().load_texture(
-                        "media-cover",
-                        art.as_ref().clone(),
-                        TextureOptions::LINEAR,
-                    );
-                    self.artwork = Some((Arc::clone(art), texture));
-                }
-                if let Some((_, texture)) = &self.artwork {
-                    ui.add(
-                        egui::Image::new((texture.id(), size))
-                            .fit_to_exact_size(size)
-                            .corner_radius(12),
-                    );
-                }
-            } else {
-                self.artwork = None;
-                let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-                ui.painter()
-                    .rect_filled(rect, 12, ui.visuals().faint_bg_color);
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "音乐",
-                    egui::FontId::proportional(18.0),
-                    accent(ui.visuals().dark_mode),
-                );
-            }
+            let side = (ui.available_width() * 0.28).clamp(76.0, 148.0);
+            self.cover(ui, &track, side);
             ui.vertical(|ui| {
+                let state_label = match track.state {
+                    PlaybackState::Playing => Some("正在播放"),
+                    PlaybackState::Paused => Some("已暂停"),
+                    PlaybackState::Stopped => Some("已停止"),
+                    _ => None,
+                };
+                if let Some(label) = state_label {
+                    ui.label(
+                        RichText::new(label)
+                            .small()
+                            .color(accent(ui.visuals().dark_mode)),
+                    );
+                }
                 ui.label(RichText::new(track_title(&track)).size(21.0).strong());
                 for text in [&track.artist, &track.album] {
                     if !text.is_empty() {
                         ui.weak(text);
                     }
                 }
+                lyric_view(ui, media, 68.0);
             });
         });
         ui.add_space(10.0);
+        self.playback(ui, media, &track)?;
+        self.lyrics(ui, media, &track)
+    }
+
+    fn cover(&mut self, ui: &mut Ui, track: &Snapshot, side: f32) {
+        let size = vec2(side, side);
+        if let Some(art) = &track.artwork {
+            let changed = self
+                .artwork
+                .as_ref()
+                .is_none_or(|(loaded, _)| !Arc::ptr_eq(loaded, art));
+            if changed {
+                let texture = ui.ctx().load_texture(
+                    "media-cover",
+                    art.as_ref().clone(),
+                    TextureOptions::LINEAR,
+                );
+                self.artwork = Some((Arc::clone(art), texture));
+            }
+            if let Some((_, texture)) = &self.artwork {
+                ui.add(
+                    egui::Image::new((texture.id(), size))
+                        .fit_to_exact_size(size)
+                        .corner_radius(12),
+                );
+            }
+        } else {
+            self.artwork = None;
+            record_sleeve(ui, side);
+        }
+    }
+
+    fn playback(&mut self, ui: &mut Ui, media: &mut Media, track: &Snapshot) -> Result<(), String> {
         let mut command = None;
         if let Some(duration) = track.duration.filter(|value| *value > 0.0) {
             let mut position = self
                 .dragging_to
                 .filter(|(generation, _)| *generation == track.generation)
                 .map_or_else(|| track.position_now(), |(_, position)| position);
-            if track.capabilities.seek {
-                let response = ui
-                    .push_id(track.generation, |ui| {
-                        ui.add(
-                            egui::Slider::new(&mut position, 0.0..=duration)
-                                .show_value(false)
-                                .text("播放进度"),
-                        )
-                    })
-                    .inner;
-                if response.dragged() {
-                    self.dragging_to = Some((track.generation, position));
-                } else if response.drag_stopped() || response.changed() {
-                    self.dragging_to = None;
-                    command = Some(Command::Seek(position));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(timestamp(position)).small().monospace());
+                let total = timestamp(duration);
+                let time_width = ui
+                    .painter()
+                    .layout_no_wrap(
+                        total.clone(),
+                        egui::TextStyle::Monospace.resolve(ui.style()),
+                        ui.visuals().text_color(),
+                    )
+                    .size()
+                    .x;
+                let width =
+                    (ui.available_width() - time_width - ui.spacing().item_spacing.x).max(28.0);
+                if track.capabilities.seek {
+                    let response = ui
+                        .push_id(track.generation, |ui| {
+                            ui.spacing_mut().slider_width = width;
+                            ui.add(
+                                egui::Slider::new(&mut position, 0.0..=duration).show_value(false),
+                            )
+                        })
+                        .inner;
+                    response.widget_info(|| egui::WidgetInfo::slider(true, position, "播放进度"));
+                    let response = response.on_hover_text("播放进度");
+                    if response.dragged() {
+                        self.dragging_to = Some((track.generation, position));
+                    } else if response.drag_stopped() || response.changed() {
+                        self.dragging_to = None;
+                        command = Some(Command::Seek(position));
+                    } else {
+                        self.dragging_to = None;
+                    }
                 } else {
                     self.dragging_to = None;
+                    ui.add(
+                        egui::ProgressBar::new((position / duration) as f32)
+                            .desired_width(width)
+                            .desired_height(4.0),
+                    );
                 }
-            } else {
-                self.dragging_to = None;
-                ui.add(egui::ProgressBar::new((position / duration) as f32));
-            }
-            ui.weak(format!("{} / {}", timestamp(position), timestamp(duration)));
+                ui.label(RichText::new(total).small().monospace());
+            });
             if track.state == PlaybackState::Playing {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(250));
@@ -140,8 +183,7 @@ impl Player {
         } else {
             self.dragging_to = None;
         }
-        transport(ui, media, &track, command)?;
-        self.lyrics(ui, media, &track)
+        transport(ui, media, track, command)
     }
 
     fn lyrics(&self, ui: &mut Ui, media: &mut Media, track: &Snapshot) -> Result<(), String> {
@@ -149,7 +191,7 @@ impl Player {
             return Ok(());
         }
         ui.add_space(8.0);
-        lyric_view(ui, media, 184.0);
+
         let (import, search) = ui
             .horizontal_wrapped(|ui| {
                 let import = ui.button("导入 LRC").clicked();
@@ -185,22 +227,64 @@ impl Player {
     }
 }
 
-pub(super) fn capsule(ui: &mut Ui, media: &mut Media) {
-    let Status::Ready(track) = media.status() else {
-        return;
-    };
-    let track = Arc::clone(track);
-    ui.separator();
-    ui.label(RichText::new(track_title(&track)).strong());
-    if !track.artist.is_empty() {
-        ui.weak(&track.artist);
-    }
-    if let Err(error) = transport(ui, media, &track, None) {
-        ui.colored_label(ui.visuals().error_fg_color, error);
-    }
-    lyric_view(ui, media, 112.0);
-    if let Some(error) = media.command_error() {
-        ui.colored_label(ui.visuals().error_fg_color, error);
+impl Player {
+    pub(super) fn capsule(&mut self, ui: &mut Ui, media: &mut Media, scale: f32) {
+        let side = 78.0 * scale;
+        if let Status::Ready(track) = media.status() {
+            let track = Arc::clone(track);
+            ui.horizontal(|ui| {
+                self.cover(ui, &track, side);
+                ui.add_space(6.0 * scale);
+                ui.vertical(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(track_title(&track))
+                                .size(17.0 * scale)
+                                .strong(),
+                        )
+                        .truncate(),
+                    );
+                    for label in [&track.artist, &track.album] {
+                        if !label.is_empty() {
+                            ui.add(egui::Label::new(RichText::new(label).weak()).truncate());
+                        }
+                    }
+                });
+            });
+            if let Err(error) = self.playback(ui, media, &track) {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            lyric_view(ui, media, 58.0 * scale);
+        } else {
+            self.artwork = None;
+            self.dragging_to = None;
+            ui.horizontal(|ui| {
+                record_sleeve(ui, side);
+                ui.vertical(|ui| {
+                    match media.status() {
+                        Status::Checking => {
+                            ui.spinner();
+                            ui.weak("正在读取 Windows 媒体会话");
+                        }
+                        Status::NoSession => {
+                            ui.strong("暂无播放会话");
+                            ui.weak("在支持 Windows 媒体控制的播放器中播放音乐。");
+                        }
+                        Status::Error(error) => {
+                            ui.colored_label(ui.visuals().error_fg_color, error);
+                        }
+                        Status::Ready(_) => unreachable!(),
+                    }
+                    if ui.button("刷新播放信息").clicked() {
+                        media.refresh();
+                    }
+                });
+            });
+        }
+        if let Some(error) = media.command_error() {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
     }
 }
 
@@ -288,20 +372,62 @@ fn transport(
         ("播放", Command::Play, can.play)
     };
     ui.horizontal_wrapped(|ui| {
-        for (label, action, available) in [
-            ("上一首", Command::Previous, can.previous),
-            (verb, playback, enabled),
-            ("下一首", Command::Next, can.next),
+        let left = ((ui.available_width() - 136.0) / 2.0).max(0.0);
+        ui.add_space(left);
+        for (symbol, label, action, available) in [
+            ("◀◀", "上一首", Command::Previous, can.previous),
+            (
+                if track.state == PlaybackState::Playing {
+                    "Ⅱ"
+                } else {
+                    "▶"
+                },
+                verb,
+                playback,
+                enabled,
+            ),
+            ("▶▶", "下一首", Command::Next, can.next),
         ] {
-            if ui
-                .add_enabled(available, egui::Button::new(label))
-                .clicked()
-            {
+            let main = matches!(action, Command::Play | Command::Pause);
+            let response = ui.add_enabled(
+                available,
+                egui::Button::new(symbol)
+                    .min_size(vec2(36.0, 32.0))
+                    .corner_radius(18)
+                    .frame(main),
+            );
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, available, label)
+            });
+            if response.on_hover_text(label).clicked() {
                 command = Some(action);
             }
         }
     });
     command.map_or(Ok(()), |command| media.command(command))
+}
+
+fn record_sleeve(ui: &mut Ui, side: f32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(side, side), egui::Sense::hover());
+    let painter = ui.painter();
+    let center = rect.center();
+    let groove = ui.visuals().widgets.inactive.bg_stroke.color;
+    painter.circle_filled(
+        center,
+        side * 0.49,
+        ui.visuals().widgets.inactive.weak_bg_fill,
+    );
+    for radius in [0.35, 0.39, 0.43, 0.47] {
+        painter.circle_stroke(center, side * radius, egui::Stroke::new(1.0_f32, groove));
+    }
+    painter.circle_filled(center, side * 0.33, ui.visuals().window_fill);
+    painter.text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        "♫",
+        egui::FontId::proportional(side * 0.24),
+        ui.visuals().text_color(),
+    );
 }
 
 fn track_title(track: &Snapshot) -> &str {

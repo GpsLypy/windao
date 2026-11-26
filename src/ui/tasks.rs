@@ -31,6 +31,10 @@ pub(super) struct Tasks {
 }
 
 impl Tasks {
+    pub(super) fn new_task(&mut self) {
+        self.draft.get_or_insert_with(TaskDraft::default);
+    }
+
     pub(super) fn show(
         &mut self,
         ui: &mut Ui,
@@ -50,10 +54,8 @@ impl Tasks {
             ] {
                 ui.selectable_value(&mut self.view, view, view.label());
             }
-        });
-        ui.horizontal_wrapped(|ui| {
             if self.draft.is_none() && primary(ui, "添加待办").clicked() {
-                self.draft = Some(TaskDraft::default());
+                self.new_task();
             }
             #[cfg(windows)]
             if self.draft.is_none() && ui.button("导入岛仔待办").clicked() {
@@ -72,15 +74,9 @@ impl Tasks {
                     Err(error) => *notice = Some(Err(format!("无法打开文件选择窗口（{error}）"))),
                 }
             }
-            let label = self.filter.map_or("所有状态", status_label);
-            egui::ComboBox::from_id_salt("task-filter")
-                .selected_text(label)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.filter, None, "所有状态");
-                    for status in statuses() {
-                        ui.selectable_value(&mut self.filter, Some(status), status_label(status));
-                    }
-                });
+        });
+        ui.add_space(3.0);
+        ui.horizontal_wrapped(|ui| {
             ui.add(
                 TextEdit::singleline(&mut self.query)
                     .hint_text("搜索待办")
@@ -88,6 +84,26 @@ impl Tasks {
                     .desired_width(160.0),
             );
         });
+        if self.view != View::Calendar {
+            egui::Frame::new()
+                .fill(ui.visuals().faint_bg_color)
+                .corner_radius(14)
+                .inner_margin(2)
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        ui.selectable_value(&mut self.filter, None, "全部");
+                        for status in statuses() {
+                            ui.selectable_value(
+                                &mut self.filter,
+                                Some(status),
+                                status_label(status),
+                            );
+                        }
+                    });
+                });
+        }
+        ui.add_space(4.0);
         if let Some(draft) = self.draft.as_mut() {
             let mut save = false;
             let mut cancel = false;
@@ -147,10 +163,17 @@ impl Tasks {
         match self.view {
             View::List => {
                 if tasks.is_empty() {
-                    ui.weak(if store.state().tasks.is_empty() {
-                        "还没有待办"
-                    } else {
-                        "未找到符合条件的待办"
+                    card(ui, |ui| {
+                        if store.state().tasks.is_empty() {
+                            subhead(ui, "还没有待办");
+                            ui.weak("添加第一项待办，记录接下来要做的事。");
+                        } else {
+                            subhead(ui, "未找到符合条件的待办");
+                            if ui.button("清除筛选和搜索").clicked() {
+                                self.filter = None;
+                                self.query.clear();
+                            }
+                        }
                     });
                 }
                 for task in tasks {
@@ -197,78 +220,88 @@ impl Tasks {
             .expect("current date is valid")
             .date_naive();
         ui.push_id((task.id, date), |ui| {
-            card(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    let mut completed = status == TaskStatus::Completed;
-                    if ui
-                        .add_enabled(
-                            scheduled && (!task.repeat.is_repeating() || date == today),
-                            egui::Checkbox::new(
-                                &mut completed,
-                                RichText::new(&task.title).strong(),
-                            ),
-                        )
-                        .changed()
-                    {
-                        *change = Some(Change::Status(
-                            task.id,
-                            if completed {
-                                TaskStatus::Completed
-                            } else {
-                                TaskStatus::Active
-                            },
-                        ));
-                    }
-                    if scheduled {
-                        ui.weak(status_label(status));
-                    } else {
-                        ui.weak("今天无需处理");
-                    }
-                    if task.repeat.is_repeating() {
-                        ui.weak(repeat_label(task.repeat));
-                    }
-                    if task.priority != Priority::None {
-                        ui.label(priority_label(task.priority));
-                    }
-                    if !task.category.is_empty() {
-                        ui.weak(category_label(&task.category));
-                    }
-                    if let Some(due_at) = task.due_at_on(date) {
-                        let due = format!("截止 {}", display_time(due_at, "%m-%d %H:%M"));
-                        if status == TaskStatus::Active && due_at < now {
-                            ui.colored_label(ui.visuals().warn_fg_color, due);
-                        } else {
-                            ui.weak(due);
-                        }
-                    }
-                });
-                if self.view == View::List {
-                    let quadrant = Quadrant::for_task(task, now);
-                    if quadrant != Quadrant::Unassigned {
-                        ui.weak(quadrant.label());
-                    }
-                }
-                if !task.notes.is_empty() {
-                    ui.label(&task.notes);
-                }
-                if self.draft.is_none() {
+            egui::Frame::new()
+                .fill(ui.visuals().faint_bg_color)
+                .corner_radius(7)
+                .inner_margin(egui::Margin::symmetric(8, 3))
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
                     ui.horizontal_wrapped(|ui| {
-                        if ui.button("编辑").clicked() {
-                            self.draft = Some(TaskDraft::from_task(task));
+                        let mut completed = status == TaskStatus::Completed;
+                        let title = if completed {
+                            RichText::new(&task.title).weak().strikethrough()
+                        } else {
+                            RichText::new(&task.title).strong()
+                        };
+                        if ui
+                            .add_enabled(
+                                scheduled && (!task.repeat.is_repeating() || date == today),
+                                egui::Checkbox::new(&mut completed, title),
+                            )
+                            .changed()
+                        {
+                            *change = Some(Change::Status(
+                                task.id,
+                                if completed {
+                                    TaskStatus::Completed
+                                } else {
+                                    TaskStatus::Active
+                                },
+                            ));
                         }
-                        if self.delete == Some(task.id) {
-                            if ui.button("确认删除").clicked() {
-                                *change = Some(Change::Remove(task.id));
+                        if self.draft.is_none() {
+                            ui.menu_button("•••", |ui| {
+                                if ui.button("编辑").clicked() {
+                                    self.draft = Some(TaskDraft::from_task(task));
+                                    ui.close();
+                                }
+                                if self.delete == Some(task.id) {
+                                    if ui.button("确认删除").clicked() {
+                                        *change = Some(Change::Remove(task.id));
+                                    }
+                                    if ui.button("取消").clicked() {
+                                        self.delete = None;
+                                    }
+                                } else if ui.button("删除").clicked() {
+                                    self.delete = Some(task.id);
+                                }
+                            })
+                            .response
+                            .on_hover_text("待办操作");
+                        }
+                        if scheduled {
+                            ui.weak(status_label(status));
+                        } else {
+                            ui.weak("今天无需处理");
+                        }
+                        if task.repeat.is_repeating() {
+                            ui.weak(repeat_label(task.repeat));
+                        }
+                        if task.priority != Priority::None {
+                            ui.label(priority_label(task.priority));
+                        }
+                        if !task.category.is_empty() {
+                            ui.weak(category_label(&task.category));
+                        }
+                        if let Some(due_at) = task.due_at_on(date) {
+                            let due = format!("截止 {}", display_time(due_at, "%m-%d %H:%M"));
+                            if status == TaskStatus::Active && due_at < now {
+                                ui.colored_label(ui.visuals().warn_fg_color, due);
+                            } else {
+                                ui.weak(due);
                             }
-                            if ui.button("取消").clicked() {
-                                self.delete = None;
-                            }
-                        } else if ui.button("删除").clicked() {
-                            self.delete = Some(task.id);
                         }
                     });
-                }
-            })
+                    if self.view == View::List {
+                        let quadrant = Quadrant::for_task(task, now);
+                        if quadrant != Quadrant::Unassigned {
+                            ui.weak(quadrant.label());
+                        }
+                    }
+                    if !task.notes.is_empty() {
+                        ui.label(&task.notes);
+                    }
+                })
         });
     }
 
