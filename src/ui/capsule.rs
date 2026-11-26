@@ -938,12 +938,6 @@ fn expanded_content(
                     crate::windows::SystemTool::Calculator,
                 ))
             }
-            #[cfg(windows)]
-            Some(launcher::Entry::ScreenCapture) => {
-                action = Some(ShellAction::LaunchSystem(
-                    crate::windows::SystemTool::ScreenCapture,
-                ))
-            }
             None => {}
         }
         return action;

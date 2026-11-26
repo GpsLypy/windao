@@ -208,6 +208,12 @@ fn tile_colors(page: Page) -> (Color32, Color32) {
     let color = match page {
         #[cfg(windows)]
         Page::Mailbox => Color32::from_rgb(61, 110, 150),
+        #[cfg(windows)]
+        Page::AiWorkbench | Page::Translation => Color32::from_rgb(53, 104, 129),
+        #[cfg(windows)]
+        Page::Capture => Color32::from_rgb(146, 72, 91),
+        #[cfg(windows)]
+        Page::Developer | Page::Authenticator => Color32::from_rgb(65, 109, 89),
         Page::AiUsage => Color32::from_rgb(57, 108, 147),
         Page::Today => Color32::from_rgb(37, 119, 237),
         Page::Calendar => Color32::from_rgb(207, 68, 75),
@@ -261,6 +267,44 @@ pub(super) fn draw_icon(ui: &Ui, page: Page, center: Pos2, color: Color32, scale
         p.circle_stroke(at(x, y), r * scale, stroke);
     };
     match page {
+        #[cfg(windows)]
+        Page::AiWorkbench => {
+            rect(-8., -6., 16., 10.);
+            line((-4., 4.), (-5., 7.));
+            line((-5., 7.), (0., 4.));
+            for x in [-4., 0., 4.] {
+                p.circle_filled(at(x, -1.), scale, color);
+            }
+        }
+        #[cfg(windows)]
+        Page::Translation => {
+            line((-8., -5.), (1., -5.));
+            line((-4., -7.), (-4., -5.));
+            line((-1., -5.), (-7., 2.));
+            line((-7., -3.), (-2., 1.));
+            line((0., 7.), (4., -3.));
+            line((4., -3.), (8., 7.));
+            line((2., 3.), (6., 3.));
+        }
+        #[cfg(windows)]
+        Page::Capture => {
+            rect(-8., -6., 16., 12.);
+            ring(0., 0., 3.);
+        }
+        #[cfg(windows)]
+        Page::Developer => {
+            line((-4., -4.), (-8., 0.));
+            line((-8., 0.), (-4., 4.));
+            line((4., -4.), (8., 0.));
+            line((8., 0.), (4., 4.));
+            line((2., -6.), (-2., 6.));
+        }
+        #[cfg(windows)]
+        Page::Authenticator => {
+            ring(0., -3., 4.);
+            rect(-6., -1., 12., 8.);
+            line((0., 2.), (0., 4.));
+        }
         Page::AiUsage => {
             line((-7., 5.), (-7., 0.));
             line((-2., 5.), (-2., -5.));

@@ -162,7 +162,7 @@ fn registration(value: bool) -> &'static str {
     if value { "已注册" } else { "未注册" }
 }
 
-fn system_tool(name: &str) -> Result<Command, String> {
+pub(crate) fn system_tool(name: &str) -> Result<Command, String> {
     let mut buffer = [0u16; 32768];
     let len = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
     if len == 0 || len >= buffer.len() {

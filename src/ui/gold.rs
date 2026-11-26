@@ -1,4 +1,7 @@
 #[cfg(windows)]
+mod dashboard;
+mod markets;
+#[cfg(windows)]
 use std::{
     sync::mpsc::{self, Receiver, TryRecvError},
     time::{Duration, Instant},
@@ -22,6 +25,7 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 #[cfg(windows)]
 #[derive(Default)]
 pub(super) struct Gold {
+    dashboard: dashboard::Dashboard,
     quote: Option<Quote>,
     pending: Option<Receiver<Result<Quote, String>>>,
     refresh_after: Option<Instant>,
@@ -32,14 +36,17 @@ pub(super) struct Gold {
 #[serde(rename_all = "camelCase")]
 struct Quote {
     symbol: String,
-    currency: String,
+    currency: Option<String>,
     price: f64,
     updated_at: DateTime<Utc>,
 }
 
 #[cfg(windows)]
 impl Gold {
-    pub(super) fn show(&mut self, ui: &mut Ui) {
+    pub(super) fn show(&mut self, ui: &mut Ui, directory: &std::path::Path) {
+        if !self.dashboard.show(ui, directory) {
+            return;
+        }
         self.poll();
         card(ui, |ui| {
             subhead(ui, "现货金价");
@@ -141,7 +148,7 @@ fn fetch_quote() -> Result<Quote, String> {
 fn parse_quote(body: &str) -> Result<Quote, String> {
     let quote: Quote = serde_json::from_str(body).map_err(|_| "Gold API 的报价格式无效。")?;
     if quote.symbol != "XAU"
-        || quote.currency != "USD"
+        || quote.currency.as_deref().is_some_and(|v| v != "USD")
         || !quote.price.is_finite()
         || quote.price <= 0.0
     {
@@ -159,6 +166,7 @@ mod tests {
         let body = r#"{"symbol":"XAU","currency":"USD","price":2000.25,"updatedAt":"2025-01-01T12:03:00Z"}"#;
         let quote = parse_quote(body).unwrap();
         assert_eq!(quote.price, 2000.25);
+        assert!(parse_quote(&body.replace("\"currency\":\"USD\",", "")).is_ok());
         assert_eq!(quote.updated_at.to_rfc3339(), "2025-01-01T12:03:00+00:00");
         assert!(parse_quote(&body.replace("USD", "EUR")).is_err());
         assert!(parse_quote(&body.replace("XAU", "XAG")).is_err());

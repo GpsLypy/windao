@@ -9,6 +9,15 @@ description = "A Windows desktop capsule for daily tasks and media"
 repository = "https://github.com/GpsLypy/windao"
 
 [dependencies]
+encoding_rs = "0.8"
+qrcode = { version = "0.14", default-features = false }
+rqrr = { version = "0.10", default-features = false, features = ["img"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+hmac = "0.12"
+sha1 = "0.10"
+data-encoding = "2"
+percent-encoding = "2"
+zeroize = { version = "1", features = ["derive"] }
 base64 = "0.22"
 imap = { version = "2.4", default-features = false }
 native-tls = "0.2"
@@ -36,8 +45,8 @@ find-msvc-tools = "0.1"
 eframe = { version = "0.34.3", default-features = false, features = ["wgpu_no_default_features"] }
 wgpu = { version = "29", default-features = false, features = ["dx12"] }
 aes-gcm = "0.10"
-arboard = { version = "3.7", default-features = false }
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+argon2 = { version = "0.5", features = ["zeroize"] }
+arboard = { version = "3.7", default-features = false, features = ["image-data"] }
 windows = { version = "0.62.2", features = [
     "ApplicationModel",
     "UI_Notifications_Management",
@@ -45,6 +54,7 @@ windows = { version = "0.62.2", features = [
     "Devices_Bluetooth_GenericAttributeProfile",
     "Devices_Enumeration",
     "Foundation",
+    "Security_Credentials_UI",
     "Media_Control",
     "Win32_Media_Audio",
     "Win32_Media_Audio_Endpoints",
@@ -61,7 +71,6 @@ windows = { version = "0.62.2", features = [
 ] }
 windows-collections = "0.3.2"
 windows-future = "0.3.2"
-zeroize = "1"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Globalization",

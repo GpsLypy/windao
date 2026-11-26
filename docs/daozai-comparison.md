@@ -20,6 +20,12 @@
 | AI 额度 | Codex、Claude、Kimi、Grok Bot、Gemini、GLM、WorkBuddy、DeepSeek、Kiro、中转站，标签更新另外列出 Antigravity CLI。[版本说明][release] | AI 用量页读取 Codex、Claude 本地用量。可绑定独立 Codex 目录、Claude 桌面版组织用量历史、Claude Code 与 Antigravity CLI 官方状态栏。Antigravity 按额度分组显示剩余比例或数量、重置时间及当前模型。[Google 状态栏格式][agy]。账户页支持 DeepSeek／Kimi API 余额、GLM Coding Plan、Kimi Code、Kiro、WorkBuddy、中转站，以及 Gemini、Grok、Claude 的报告来源。[本地用量](../src/ai_usage.rs) · [账号](../src/ui/provider_balances.rs) | 中转站支持直接导入 CC Switch 通用、New API、Sub2API 模板，以及同源 GET 与数值换算的自定义查询。Gemini／Grok 的官网可见百分比可由分享扩展写入手选的账号文件。能确认页面账号时，可开启每 5 分钟刷新；离开页面、切换账号或失去写权限后停用。未登录探测仅验证鉴权响应，实际账户额度、Grok 登录页面及已登录 Antigravity 实机回调待验。 |
 | 安装与更新 | Windows 10/11 x64 安装程序与 ZIP、应用内下载校验更新、诊断包、D3D12 回退。[更新][updates] · [诊断][diagnostics] | 提供 Windows 10 2004+ / 11 x64 的 NSIS 与 ZIP 构建。可通过 Windows CI 获取专供 Windows 11 测试的未签名 MSIX，另支持自行签名构建、应用内校验下载更新、诊断 ZIP、OpenGL 初始化失败时回退 D3D12。[打包](../package.py) · [MSIX](../build-msix.ps1) · [更新](../src/updates/desktop.rs) · [渲染](../src/app.rs) | 安装器升级与进程交接、GPU 回退、MSIX 签名安装及真实授权待 Windows 验证。Windows 10 的系统兼容性待验。 |
 
+
+### macOS 菜单补充核对
+
+另按 NotchCalendar 的三列菜单核对了 14 个入口。效率列包含日历、便笺、AI 工作台、邮件，内容列包含文件、剪贴板、截屏与录屏、音乐、翻译，工具列包含行情、计算器、开发工具、系统监控、身份验证器。Windows 使用系统计算器、截图工具和 Game Bar，翻译使用本机 Ollama。AI 工作台与用量查询各有独立入口。账户查询和系统录屏的实际可用性取决于已配置的服务和 Windows 组件。
+
+
 [release]: https://github.com/Renly1994/xiaotang-daozai/releases/tag/v0.6.70
 [readme]: https://github.com/Renly1994/xiaotang-daozai/blob/0615f19786d3d5b6b4c2c74be987fbe855e9fe03/README.md
 [usage]: https://github.com/Renly1994/xiaotang-daozai/blob/0615f19786d3d5b6b4c2c74be987fbe855e9fe03/docs/USAGE.md

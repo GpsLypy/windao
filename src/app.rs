@@ -1,7 +1,7 @@
 mod desktop_todo;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -20,7 +20,12 @@ pub(crate) const WORKBENCH_VIEWPORT_KEY: &str = "windao-workbench";
 const FOLD_TIME: Duration = Duration::from_millis(360);
 const AUTO_FOLD_TIME: Duration = Duration::from_millis(440);
 const AVOIDANCE_INTERVAL: Duration = Duration::from_millis(250);
-const ICON: &[u8] = include_bytes!("../assets/icon.png");
+pub(crate) static PRODUCT_ICON: LazyLock<Arc<egui::IconData>> = LazyLock::new(|| {
+    Arc::new(
+        eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
+            .expect("bundled NotchCalendar icon"),
+    )
+});
 
 pub(crate) static ACTIVE_RENDERER: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 
@@ -35,9 +40,7 @@ pub fn run() -> Result<(), String> {
     let legacy_profile = app_data.join("Notch Calendar Windows");
     let store = Store::open(profile.clone())?;
     let legacy = legacy_profile.join("workspace.json");
-    let icon = eframe::icon_data::from_png_bytes(ICON)
-        .map(Arc::new)
-        .map_err(|error| error.to_string())?;
+    let icon = PRODUCT_ICON.clone();
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
             .with_icon(icon.clone())
@@ -306,6 +309,9 @@ impl Desktop {
             },
         );
         self.workspace_open = !close;
+        if close {
+            self.workbench.window_closed();
+        }
         if self.workbench.open_alert_window.is_some() || self.workbench.open_wechat {
             ctx.request_repaint_of(ViewportId::ROOT);
         }

@@ -45,6 +45,10 @@ try {
         $shell.CreateShortcut($startLink).TargetPath -ne $exe -or (& $login)) {
         throw "Unexpected first-install settings."
     }
+    foreach ($link in @($desktopLink,$startLink)) {
+        $iconPath,$iconIndex = $shell.CreateShortcut($link).IconLocation -split ',(?=\s*\d+$)',2
+        if ($iconPath.Trim('"') -ne $exe -or $iconIndex.Trim() -ne '0') { throw "Shortcut does not use the product icon" }
+    }
     if (!(Test-Path $runKey)) { New-Item -Path $runKey | Out-Null }
     New-ItemProperty -Path $runKey -Name WinDao -Value ('"' + $exe + '"') -Force | Out-Null
     Remove-Item -LiteralPath $desktopLink

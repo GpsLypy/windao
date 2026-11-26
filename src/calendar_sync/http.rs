@@ -104,6 +104,35 @@ impl Http {
         Ok((status, text))
     }
 
+    pub(crate) fn market(&self, url: &url::Url) -> Result<String> {
+        let header = match url.host_str() {
+            Some("hq.sinajs.cn") => "Referer: https://finance.sina.com.cn/\r\n",
+            Some("qt.gtimg.cn" | "smartbox.gtimg.cn") => "",
+            _ => return Err("无效的行情来源。".into()),
+        };
+        let input = Request {
+            method: "GET",
+            url,
+            authorization: None,
+            depth: None,
+            body: "",
+        };
+        let (status, bytes, _) = self.bytes(&input, "text/plain", &[], header)?;
+        if status != 200 {
+            return Err(format!("行情来源返回 HTTP {status}。"));
+        }
+        if bytes.len() > 256 * 1024 {
+            return Err("行情响应过大。".into());
+        }
+        if let Ok(text) = std::str::from_utf8(&bytes) {
+            return Ok(text.to_owned());
+        }
+        encoding_rs::GB18030
+            .decode_without_bom_handling_and_without_replacement(&bytes)
+            .map(|text| text.into_owned())
+            .ok_or_else(|| "行情字符编码无效。".into())
+    }
+
     pub(super) fn weather(&self, url: &url::Url, key: &str) -> Result<String> {
         let input = Request {
             method: "GET",

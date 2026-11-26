@@ -104,7 +104,7 @@ FunctionEnd
   ${EndIf}
   ${If} "${CHOICE}" == "1"
   ${AndIfNot} ${FileExists} "$LinkFile"
-    CreateShortCut "$LinkFile" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\icon.ico"
+    CreateShortCut "$LinkFile" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
   ${EndIf}
 !macroend
 
@@ -234,7 +234,7 @@ Section "安装"
   ${EndIf}
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${PRODUCT_VERSION}"
-  WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\icon.ico"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon" '$\"$INSTDIR\${APP_EXE}$\",0'
   WriteRegStr HKCU "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" '$\"$INSTDIR\Uninstall.exe$\"'
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoModify" 1

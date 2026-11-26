@@ -17,6 +17,9 @@ try {
     if ((Get-FileHash $exe).Hash -ne (Get-FileHash target/release/windao.exe).Hash) {
         throw "Portable binary does not match the release build"
     }
+    $setup = Get-ChildItem release -Filter "*-Setup.exe"
+    python tests/verify-product-icon.py $exe $setup.FullName
+    if ($LASTEXITCODE -ne 0) { throw "Packaged product icons do not match." }
     $id = [Guid]::NewGuid().ToString()
     $profile = Join-Path $stage "WinDao"
     New-Item -ItemType Directory -Path $profile | Out-Null

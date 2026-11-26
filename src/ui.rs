@@ -10,6 +10,15 @@ use crate::dock::CapsulePage;
 use crate::workspace::{Appearance, Store};
 
 mod ai_meter;
+#[cfg(any(windows, test))]
+mod authenticator;
+#[cfg(any(windows, test))]
+mod capture;
+#[cfg(any(windows, test))]
+mod developer_tools;
+#[cfg(any(windows, test))]
+mod workbench_tools;
+
 mod calendar;
 pub(crate) mod capsule;
 #[cfg(windows)]
@@ -52,6 +61,17 @@ pub enum Page {
     #[default]
     Today,
     AiUsage,
+    #[cfg(windows)]
+    AiWorkbench,
+    #[cfg(windows)]
+    Translation,
+    #[cfg(windows)]
+    Capture,
+    #[cfg(windows)]
+    Developer,
+    #[cfg(windows)]
+    Authenticator,
+
     Calendar,
     Notifications,
     #[cfg(windows)]
@@ -91,6 +111,16 @@ impl Page {
         Self::Tasks,
         Self::AiUsage,
         #[cfg(windows)]
+        Self::AiWorkbench,
+        #[cfg(windows)]
+        Self::Translation,
+        #[cfg(windows)]
+        Self::Capture,
+        #[cfg(windows)]
+        Self::Developer,
+        #[cfg(windows)]
+        Self::Authenticator,
+        #[cfg(windows)]
         Self::Music,
         Self::Focus,
         Self::Notes,
@@ -118,6 +148,17 @@ impl Page {
         match self {
             Self::Today => "今天",
             Self::AiUsage => "AI 用量",
+            #[cfg(windows)]
+            Self::AiWorkbench => "AI 工作台",
+            #[cfg(windows)]
+            Self::Translation => "翻译",
+            #[cfg(windows)]
+            Self::Capture => "截屏与录屏",
+            #[cfg(windows)]
+            Self::Developer => "开发工具",
+            #[cfg(windows)]
+            Self::Authenticator => "身份验证器",
+
             Self::Calendar => "日历",
             #[cfg(windows)]
             Self::Mailbox => "邮件",
@@ -141,7 +182,7 @@ impl Page {
             #[cfg(windows)]
             Self::Wireless => "无线设备",
             #[cfg(windows)]
-            Self::Performance => "系统性能",
+            Self::Performance => "系统监控",
             #[cfg(windows)]
             Self::Plugins => "插件集市",
             Self::Settings => "设置",
@@ -484,6 +525,15 @@ fn field(ui: &mut Ui, label: &str, value: &mut String, hint: &str, max: usize) -
 pub struct Workbench {
     pub page: Page,
     brand_icon: Option<egui::TextureHandle>,
+    #[cfg(windows)]
+    workbench_tools: workbench_tools::WorkbenchTools,
+    #[cfg(windows)]
+    developer: developer_tools::DeveloperTools,
+    #[cfg(windows)]
+    authenticator: authenticator::Authenticator,
+    #[cfg(windows)]
+    capture: capture::Capture,
+
     navigation_query: String,
     calendar: calendar::Calendar,
     #[cfg(windows)]
@@ -534,6 +584,12 @@ pub struct Workbench {
 }
 
 impl Workbench {
+    #[cfg(windows)]
+    pub(crate) fn window_closed(&mut self) {
+        self.authenticator.lock();
+        self.capture.stop();
+    }
+
     #[cfg(windows)]
     pub fn take_desktop_todo_request(&mut self) -> bool {
         std::mem::take(&mut self.tasks.open_desktop)
@@ -644,6 +700,17 @@ impl Workbench {
                     .id_salt(self.page.title())
                     .show(ui, |ui| match self.page {
                         Page::Today => self.today(ui, store),
+                        #[cfg(windows)]
+                        Page::AiWorkbench => self.workbench_tools.show_ai(ui, store),
+                        #[cfg(windows)]
+                        Page::Translation => self.workbench_tools.show_translation(ui),
+                        #[cfg(windows)]
+                        Page::Developer => self.developer.show(ui),
+                        #[cfg(windows)]
+                        Page::Authenticator => self.authenticator.show(ui, store.directory()),
+                        #[cfg(windows)]
+                        Page::Capture => self.capture.show(ui),
+
                         Page::AiUsage => self.ai_meter.show(ui, store),
                         Page::Calendar => self.calendar.show(
                             ui,
@@ -673,7 +740,7 @@ impl Workbench {
                         #[cfg(windows)]
                         Page::Tools => self.salary.show(ui, store.directory()),
                         #[cfg(windows)]
-                        Page::Market => self.gold.show(ui),
+                        Page::Market => self.gold.show(ui, store.directory()),
                         #[cfg(windows)]
                         Page::Files => self.tools.render(ui, store.directory()),
                         #[cfg(windows)]
@@ -843,6 +910,14 @@ impl Workbench {
 
     pub(crate) fn navigate(&mut self, page: Page) {
         if self.page != page {
+            #[cfg(windows)]
+            if self.page == Page::Authenticator {
+                self.authenticator.lock();
+            }
+            #[cfg(windows)]
+            if self.page == Page::Capture {
+                self.capture.stop();
+            }
             if page == Page::Settings {
                 self.settings_return_page = self.page;
             }

@@ -356,6 +356,7 @@ impl Inbox {
                     ui.ctx().show_viewport_immediate(
                         id,
                         egui::ViewportBuilder::default()
+                            .with_icon(crate::app::PRODUCT_ICON.clone())
                             .with_title("邮件正文")
                             .with_inner_size([560., 440.]),
                         |ctx, _| {

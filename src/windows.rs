@@ -653,7 +653,7 @@ impl Shell {
             tray_added: Cell::new(false),
             menu_open: Cell::new(false),
             dock_move_origin: Cell::new(None),
-            tray_icon: TrayIcon::from_product_asset(),
+            tray_icon: TrayIcon::from_product_asset(hwnd),
             previous_foreground: Cell::new(null_mut()),
             taskbar_notifications: RefCell::new(taskbar_notifications::TaskbarNotifications::new()),
         });
@@ -1370,28 +1370,24 @@ fn copy_utf16(buffer: &mut [u16], text: &str) {
 struct TrayIcon(HICON);
 
 impl TrayIcon {
-    fn from_product_asset() -> Option<Self> {
-        // The embedded ICO contains a single PNG-backed icon directory entry.
-        let ico = include_bytes!("../assets/icon.ico");
-        let length = u32::from_le_bytes(ico.get(14..18)?.try_into().ok()?);
-        let offset = u32::from_le_bytes(ico.get(18..22)?.try_into().ok()?) as usize;
-        let pixels = ico.get(offset..offset.checked_add(length as usize)?)?;
-        let mut aligned = vec![0_u32; pixels.len().div_ceil(size_of::<u32>())];
+    fn from_product_asset(hwnd: HWND) -> Option<Self> {
+        // Load the appropriately sized image from the EXE's product icon group.
+        let instance = unsafe { GetWindowLongPtrW(hwnd, GWLP_HINSTANCE) }
+            as windows_sys::Win32::Foundation::HINSTANCE;
+        if instance.is_null() {
+            return None;
+        }
+        let dpi = unsafe { GetDpiForWindow(hwnd) };
+        let size =
+            |metric| unsafe { windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi(metric, dpi) };
         let icon = unsafe {
-            // CreateIconFromResourceEx requires DWORD-aligned bytes.
-            std::ptr::copy_nonoverlapping(
-                pixels.as_ptr(),
-                aligned.as_mut_ptr().cast::<u8>(),
-                pixels.len(),
-            );
-            CreateIconFromResourceEx(
-                aligned.as_ptr().cast(),
-                length,
-                1,
-                0x0003_0000,
-                GetSystemMetrics(SM_CXSMICON),
-                GetSystemMetrics(SM_CYSMICON),
-                0,
+            LoadImageW(
+                instance,
+                std::ptr::without_provenance(1),
+                IMAGE_ICON,
+                size(SM_CXSMICON),
+                size(SM_CYSMICON),
+                LR_DEFAULTCOLOR,
             )
         };
         (!icon.is_null()).then_some(Self(icon))

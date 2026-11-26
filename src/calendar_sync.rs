@@ -28,6 +28,11 @@ pub(super) struct Request<'a> {
 }
 
 #[cfg(windows)]
+pub(crate) fn market_feed(url: &Url) -> Result<String> {
+    http::Http::open()?.market(url)
+}
+
+#[cfg(windows)]
 pub(crate) fn get_json(url: &Url) -> Result<(u16, String)> {
     get_json_response(url, None)
 }

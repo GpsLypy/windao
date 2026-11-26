@@ -10,8 +10,6 @@ pub(super) enum Entry {
     Page(Page),
     #[cfg(windows)]
     Calculator,
-    #[cfg(windows)]
-    ScreenCapture,
     DesktopTodo,
 }
 
@@ -22,11 +20,15 @@ const GROUPS: &[(&str, &[Entry])] = &[
         "效率",
         &[
             Open(Page::Calendar),
-            Open(Page::AiUsage),
             Open(Page::Notes),
+            #[cfg(windows)]
+            Open(Page::AiWorkbench),
+            #[cfg(windows)]
+            Open(Page::Mailbox),
             Open(Page::Tasks),
-            Open(Page::Focus),
             Entry::DesktopTodo,
+            Open(Page::Focus),
+            Open(Page::AiUsage),
         ],
     ),
     (
@@ -37,12 +39,12 @@ const GROUPS: &[(&str, &[Entry])] = &[
             #[cfg(windows)]
             Open(Page::Clipboard),
             #[cfg(windows)]
-            Entry::ScreenCapture,
+            Open(Page::Capture),
             #[cfg(windows)]
             Open(Page::Music),
-            Open(Page::Notifications),
             #[cfg(windows)]
-            Open(Page::Mailbox),
+            Open(Page::Translation),
+            Open(Page::Notifications),
         ],
     ),
     (
@@ -53,7 +55,11 @@ const GROUPS: &[(&str, &[Entry])] = &[
             #[cfg(windows)]
             Entry::Calculator,
             #[cfg(windows)]
+            Open(Page::Developer),
+            #[cfg(windows)]
             Open(Page::Performance),
+            #[cfg(windows)]
+            Open(Page::Authenticator),
             #[cfg(windows)]
             Open(Page::Wireless),
             Open(Page::Dates),
@@ -68,8 +74,6 @@ impl Entry {
             #[cfg(windows)]
             Self::Calculator => "计算器",
             Self::DesktopTodo => "桌面待办",
-            #[cfg(windows)]
-            Self::ScreenCapture => "截图",
         }
     }
 
@@ -141,22 +145,6 @@ impl Entry {
                         p.circle_filled(center + vec2(x, y) * s, 0.9 * s, color);
                     }
                 }
-            }
-            #[cfg(windows)]
-            Self::ScreenCapture => {
-                let p = ui.painter();
-                let stroke = Stroke::new(1.4 * s, color);
-                p.rect_stroke(
-                    egui::Rect::from_center_size(center, vec2(16.0, 12.0) * s),
-                    3,
-                    stroke,
-                    StrokeKind::Inside,
-                );
-                p.circle_stroke(center, 3.0 * s, stroke);
-                p.line_segment(
-                    [center + vec2(-3.0, -7.5) * s, center + vec2(2.0, -7.5) * s],
-                    stroke,
-                );
             }
         }
     }
@@ -316,4 +304,31 @@ pub(super) fn show(
             }
         });
     choice
+}
+
+#[cfg(all(windows, test))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mac_menu_entries_are_searchable_in_the_same_groups() {
+        let expected: &[(&str, &[&str])] = &[
+            ("效率", &["日历", "便笺", "AI 工作台", "邮件"]),
+            ("内容", &["文件", "剪贴板", "截屏与录屏", "音乐", "翻译"]),
+            (
+                "工具",
+                &["行情", "计算器", "开发工具", "系统监控", "身份验证器"],
+            ),
+        ];
+        for ((group, entries), (reference, titles)) in GROUPS.iter().zip(expected) {
+            assert_eq!(group, reference);
+            let labels: Vec<_> = entries.iter().map(|entry| entry.label()).collect();
+            assert!(labels.starts_with(titles));
+            for entry in *entries {
+                if let Open(page) = entry {
+                    assert!(Page::ALL.contains(page));
+                }
+            }
+        }
+    }
 }
