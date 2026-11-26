@@ -1,0 +1,19 @@
+openspec/changes/windao-open-source/tasks.md
+  s_f26486ea6624c1::t_9477ba5d417ba0 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cefb867476186dc18d8570263e29784e28df6cb2",
+  "prompts": {},
+  "sessions": {
+    "s_f26486ea6624c1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a21603-ebf6-7503-9876-f6050c07cd76",
+        "model": "gpt-6.2-sol"
+      },
+      "human_author": "GpsLypy <80027734+GpsLypy@users.noreply.github.com>"
+    }
+  }
+}
