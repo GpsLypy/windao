@@ -1,0 +1,22 @@
+README.md
+  s_f26486ea6624c1::t_27a8f5ee449c95 20-22,32,45,61-67,93,96
+src/ui/music.rs
+  s_f26486ea6624c1::t_fa314430739a6c 248-260,267-268
+  s_f26486ea6624c1::t_6c626654e195c1 269
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6f897dd3bc354ca4a3c4f22ae0a61e2d86155eea",
+  "prompts": {},
+  "sessions": {
+    "s_f26486ea6624c1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a21603-ebf6-7503-9876-f6050c07cd76",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "GpsLypy <80027734+GpsLypy@users.noreply.github.com>"
+    }
+  }
+}
