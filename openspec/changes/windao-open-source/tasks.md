@@ -13,5 +13,5 @@
 ## 2. Verification and publication
 
 - [x] 2.1 Verify host tests, Windows target checks and x64 packages.
-- [ ] 2.2 Publish and verify GitHub repository, release and attachments.
+- [x] 2.2 Publish and verify GitHub repository, release and attachments.
 - [ ] 2.3 Verify installation, DPI, drag and capture exclusion on Windows hardware.
