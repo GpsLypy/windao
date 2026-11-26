@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "widgets": [
+    {
+      "version": 1,
+      "id": "catalog.meeting-prep",
+      "title": "会议准备清单",
+      "widget": {
+        "type": "checklist",
+        "items": ["确认议题和预期结果", "准备要分享的文件", "检查麦克风和摄像头", "记下待确认事项"]
+      }
+    },
+    {
+      "version": 1,
+      "id": "catalog.weekly-review",
+      "title": "周回顾提示",
+      "widget": {
+        "type": "text",
+        "body": "这周完成了什么？\n哪些事项要带到下周？\n下周最重要的一件事是什么？"
+      }
+    }
+  ]
+}
