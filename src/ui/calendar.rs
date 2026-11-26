@@ -111,6 +111,37 @@ impl Calendar {
     ) {
         let today = Local::now().date_naive();
         title(ui, "日历");
+        let old = store.state().settings.meeting_lead_minutes;
+        let mut lead = old;
+        egui::ComboBox::from_label("日程提醒")
+            .selected_text(if lead == 0 {
+                "开始时".to_owned()
+            } else {
+                format!("提前 {lead} 分钟")
+            })
+            .show_ui(ui, |ui| {
+                for value in [0, 5, 10, 15, 30, 60] {
+                    ui.selectable_value(
+                        &mut lead,
+                        value,
+                        if value == 0 {
+                            "开始时".to_owned()
+                        } else {
+                            format!("提前 {value} 分钟")
+                        },
+                    );
+                }
+            });
+        if lead != old {
+            *notice = Some(
+                store
+                    .update(|state| {
+                        state.settings.meeting_lead_minutes = lead;
+                        Ok(())
+                    })
+                    .map(|()| "日程提醒已保存".into()),
+            );
+        }
         if ui.available_width() >= 450.0 && self.draft.is_none() {
             ui.columns(2, |columns| {
                 self.agenda(&mut columns[0], store, notice);
@@ -211,6 +242,7 @@ impl Calendar {
         today: NaiveDate,
         capsule_scale: Option<f32>,
     ) {
+        let events = crate::workspace::event_identity::visible(events);
         let scale = capsule_scale.unwrap_or(1.0);
         let compact = capsule_scale.is_some();
         ui.horizontal_wrapped(|ui| {
@@ -407,10 +439,8 @@ impl Calendar {
             }
             ui.separator();
         }
-        let mut events: Vec<_> = store
-            .state()
-            .events
-            .iter()
+        let mut events: Vec<_> = crate::workspace::event_identity::visible(&store.state().events)
+            .into_iter()
             .filter(|event| on_date(event, self.date))
             .collect();
         events.sort_by_key(|event| (!event.all_day, event.start_at));
@@ -639,14 +669,54 @@ impl SourceDraft {
         store: &mut Store,
         sync: &mut CalendarSync,
     ) -> Option<Result<bool, String>> {
-        const KINDS: [CalendarSourceKind; 2] =
-            [CalendarSourceKind::Ics, CalendarSourceKind::CalDav];
+        const KINDS: [CalendarSourceKind; 3] = [
+            CalendarSourceKind::Ics,
+            CalendarSourceKind::CalDav,
+            CalendarSourceKind::Exchange,
+        ];
         ui.horizontal_wrapped(|ui| {
             ui.label("来源类型");
             for kind in KINDS {
                 ui.selectable_value(&mut self.kind, kind, source_kind(kind));
             }
         });
+        if self.id.is_none() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("服务商");
+                for (name, kind, url) in [
+                    (
+                        "飞书",
+                        CalendarSourceKind::CalDav,
+                        "https://caldav.feishu.cn/calendars/",
+                    ),
+                    (
+                        "钉钉",
+                        CalendarSourceKind::CalDav,
+                        "https://calendar.dingtalk.com",
+                    ),
+                    (
+                        "企业微信",
+                        CalendarSourceKind::Exchange,
+                        "https://wecom.work/Microsoft-Server-ActiveSync",
+                    ),
+                    (
+                        "iCloud",
+                        CalendarSourceKind::CalDav,
+                        "https://caldav.icloud.com/",
+                    ),
+                ] {
+                    if ui.button(name).clicked() {
+                        self.connection = Connection {
+                            url: url.into(),
+                            username: String::new(),
+                            password: String::new(),
+                        };
+                        self.kind = kind;
+                        self.name = name.into();
+                    }
+                }
+            });
+        }
         field(ui, "名称", &mut self.name, "例如 工作日历", 100);
         ui.label("HTTPS 地址");
         ui.add(
@@ -655,7 +725,7 @@ impl SourceDraft {
                 .password(self.kind == CalendarSourceKind::Ics)
                 .char_limit(4096),
         );
-        if self.kind == CalendarSourceKind::CalDav {
+        if self.kind != CalendarSourceKind::Ics {
             field(
                 ui,
                 "账号",
@@ -698,6 +768,7 @@ fn source_kind(kind: CalendarSourceKind) -> &'static str {
     match kind {
         CalendarSourceKind::Ics => "ICS 订阅",
         CalendarSourceKind::CalDav => "CalDAV",
+        CalendarSourceKind::Exchange => "Exchange ActiveSync",
     }
 }
 

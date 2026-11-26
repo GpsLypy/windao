@@ -127,12 +127,140 @@ pub(super) fn read(path: &std::path::Path) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "请选择 UTF-8 或带 BOM 的 UTF-16 LRC 文件。".into())
 }
 
+pub(super) fn netease_id(value: &str) -> Option<u64> {
+    let value = value.trim();
+    let parse = |s: &str| {
+        s.parse::<u64>()
+            .ok()
+            .filter(|n| *n > 0 && s.bytes().all(|b| b.is_ascii_digit()))
+    };
+    if let Some(id) = parse(value) {
+        return Some(id);
+    }
+    let link = url::Url::parse(value).ok()?;
+    if link.scheme() != "https"
+        || !matches!(link.host_str(), Some("music.163.com" | "y.music.163.com"))
+    {
+        return None;
+    }
+    let fragment;
+    let song = if let Some(path) = link.fragment() {
+        fragment = url::Url::parse("https://music.163.com")
+            .ok()?
+            .join(path)
+            .ok()?;
+        &fragment
+    } else {
+        &link
+    };
+    if song.host_str() != link.host_str() && song.host_str() != Some("music.163.com") {
+        return None;
+    }
+    if !matches!(song.path(), "/song" | "/m/song") {
+        return None;
+    }
+    song.query_pairs()
+        .find(|(key, _)| key == "id")
+        .and_then(|(_, v)| parse(&v))
+}
+
 #[cfg(windows)]
-pub(super) fn lookup(track: &super::Snapshot) -> Result<String, String> {
+fn lookup_netease(id: u64) -> Result<String, String> {
+    let url = url::Url::parse(&format!(
+        "https://music.163.com/api/song/lyric?id={id}&lv=-1&tv=-1"
+    ))
+    .map_err(|_| "歌曲 ID 无效")?;
+    let (code, raw) = crate::calendar_sync::get_json(&url)?;
+    if code != 200 {
+        return Err(format!("网易云歌词服务返回 HTTP {code}"));
+    }
+    let data: serde_json::Value = serde_json::from_str(&raw).map_err(|_| "歌词数据格式无效")?;
+    let lyrics = data
+        .pointer("/lrc/lyric")
+        .and_then(|v| v.as_str())
+        .ok_or("该 ID 暂无同步歌词")?;
+    Lyrics::parse(lyrics)?;
+    Ok(lyrics.to_owned())
+}
+
+#[cfg(windows)]
+fn lookup_netease_track(track: &super::Snapshot, duration: f64) -> Option<u64> {
+    let mut url = url::Url::parse("https://music.163.com/api/search/get/web").ok()?;
+    url.query_pairs_mut()
+        .append_pair("s", &format!("{} {}", track.title, track.artist))
+        .append_pair("type", "1")
+        .append_pair("limit", "15");
+    let (200, body) = crate::calendar_sync::get_json(&url).ok()? else {
+        return None;
+    };
+    matching_netease_id(&body, &track.title, &track.artist, &track.album, duration)
+}
+
+fn matching_netease_id(
+    body: &str,
+    title: &str,
+    artist: &str,
+    album: &str,
+    duration: f64,
+) -> Option<u64> {
+    let data: serde_json::Value = serde_json::from_str(body).ok()?;
+    let normalize = |text: &str| {
+        text.to_lowercase()
+            .split(['/', ',', '、', '&', ';'])
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    let same = |v: Option<&serde_json::Value>, expected: &str| {
+        v.and_then(|v| v.as_str())
+            .is_some_and(|v| normalize(v) == normalize(expected))
+    };
+    let mut ids = std::collections::BTreeSet::new();
+    for row in data.pointer("/result/songs")?.as_array()?.iter().take(15) {
+        if !same(row.get("name"), title)
+            || (!album.trim().is_empty() && !same(row.pointer("/album/name"), album))
+        {
+            continue;
+        }
+        let Some(ms) = row.get("duration").and_then(|v| v.as_f64()) else {
+            continue;
+        };
+        if (ms / 1000. - duration).abs() > 3. {
+            continue;
+        }
+        let Some(artists) = row.get("artists").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        let names = artists
+            .iter()
+            .filter_map(|v| v.get("name")?.as_str())
+            .collect::<Vec<_>>()
+            .join("/");
+        if !artist.trim().is_empty()
+            && normalize(&names) == normalize(artist)
+            && let Some(id) = row["id"].as_u64().filter(|id| *id > 0)
+        {
+            ids.insert(id);
+        }
+    }
+    (ids.len() == 1).then(|| *ids.first().unwrap())
+}
+
+#[cfg(windows)]
+pub(super) fn lookup(track: &super::Snapshot, id: Option<u64>) -> Result<String, String> {
+    if let Some(id) = id {
+        return lookup_netease(id);
+    }
     let duration = track
         .duration
         .filter(|duration| duration.is_finite() && *duration > 0.0)
         .ok_or("播放器尚未提供曲目时长。")?;
+    if track.source.to_ascii_lowercase().contains("cloudmusic")
+        && let Some(id) = lookup_netease_track(track, duration)
+        && let Ok(text) = lookup_netease(id)
+    {
+        return Ok(text);
+    }
     let mut url = url::Url::parse("https://lrclib.net/api/get").expect("LRCLIB endpoint");
     url.query_pairs_mut()
         .append_pair("track_name", track.title.trim())
@@ -190,6 +318,22 @@ fn select_matching_lyrics(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn song_id_checks_hosts_and_rejects_ambiguous_recordings() {
+        assert_eq!(netease_id("https://music.163.com/#/song?id=42"), Some(42));
+        assert_eq!(netease_id("https://example.com/song?id=42"), None);
+        assert_eq!(netease_id("https://music.163.com/playlist?id=42"), None);
+        let test = |id| serde_json::json!({"name":"A","artists":[{"name":"B"}],"album":{"name":"C"},"duration":120000,"id":id});
+        let payload = |entries: Vec<_>| serde_json::json!({"result":{"songs":entries}}).to_string();
+        assert_eq!(
+            matching_netease_id(&payload(vec![test(5)]), "A", "B", "C", 120.),
+            Some(5)
+        );
+        assert_eq!(
+            matching_netease_id(&payload(vec![test(5), test(6)]), "A", "B", "C", 120.),
+            None
+        );
+    }
 
     #[test]
     fn lrc_uses_offsets_and_clears_during_timed_instrumental_gaps() {

@@ -31,6 +31,12 @@ pub struct ImportPreview {
 }
 
 impl ImportPreview {
+    pub(crate) fn changes(&self) -> impl Iterator<Item = &Event> {
+        self.events
+            .iter()
+            .filter(|event| !self.base.contains(event))
+    }
+
     pub fn apply(self, store: &mut Store) -> Result<(), String> {
         store.update(move |state| {
             if state.events != self.base {
@@ -53,10 +59,18 @@ pub fn preview_import(path: &Path, existing: &[Event], now: i64) -> Result<Impor
     File::open(path)
         .and_then(|file| file.take(MAX_BYTES + 1).read_to_end(&mut input))
         .map_err(|err| format!("无法读取日历文件（{err}）"))?;
+    preview_bytes(&input, existing, now)
+}
+
+pub(crate) fn preview_bytes(
+    input: &[u8],
+    existing: &[Event],
+    now: i64,
+) -> Result<ImportPreview, String> {
     if input.len() as u64 > MAX_BYTES {
         return Err("日历文件不能超过 2 MiB。".into());
     }
-    let input = std::str::from_utf8(&input).map_err(|_| "日历文件应使用 UTF-8 编码。")?;
+    let input = std::str::from_utf8(input).map_err(|_| "日历文件应使用 UTF-8 编码。")?;
     parse(input.trim_start_matches('\u{feff}'), existing, now)
 }
 
@@ -874,7 +888,7 @@ fn encode(events: &[Event], now: i64) -> Result<String, String> {
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//NotchCalendar//Windows//ZH\r\nCALSCALE:GREGORIAN\r\n",
     );
     let mut exported_uids = HashSet::new();
-    for event in events {
+    for event in crate::workspace::event_identity::visible(events) {
         validate_event(event)?;
         if !exported_uids.insert(event.id) {
             return Err("包含重复日程，无法导出。".into());

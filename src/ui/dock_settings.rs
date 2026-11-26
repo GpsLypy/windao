@@ -1,6 +1,8 @@
 use eframe::egui::{self, Button, Frame, Grid, Id, Margin, RichText, Ui};
 
-use crate::dock::{CapsulePage, DockEdge, DockSettings, executable_name};
+use crate::dock::{
+    CapsulePage, CapsuleShape, CapsuleSkin, DockEdge, DockSettings, executable_name,
+};
 use crate::workspace::Settings;
 
 use super::{DisplayOption, card, field, subhead};
@@ -76,8 +78,25 @@ impl Editor {
         });
         card(ui, |ui| {
             subhead(ui, "胶囊显示");
+            ui.horizontal_wrapped(|ui| {
+                ui.label("皮肤");
+                for (skin, name) in CapsuleSkin::ALL {
+                    ui.selectable_value(&mut settings.dock.skin, skin, name);
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.label("形态");
+                ui.selectable_value(&mut settings.dock.shape, CapsuleShape::Pill, "胶囊");
+                ui.selectable_value(&mut settings.dock.shape, CapsuleShape::Notch, "刘海");
+            });
+            if settings.dock.skin == CapsuleSkin::Cloud {
+                ui.weak("随当前专辑封面取色，指针移动时光晕随之移动。");
+            }
+            ui.checkbox(&mut settings.dock.companion, "收起时显示猫咪伙伴");
             ui.checkbox(&mut settings.dock.minimal, "极简模式");
-            ui.checkbox(&mut settings.dock.translucent, "半透明胶囊");
+            if !settings.dock.skin.glass() {
+                ui.checkbox(&mut settings.dock.translucent, "半透明胶囊");
+            }
             ui.horizontal(|ui| {
                 ui.label("时钟");
                 ui.selectable_value(&mut settings.dock.clock_24h, true, "24 小时制");

@@ -280,6 +280,22 @@ fn scan(
     Update::Devices(devices, error)
 }
 
+pub(crate) fn connected_devices() -> Option<std::collections::BTreeMap<String, String>> {
+    let Update::Devices(devices, None) = scan([paired_devices(true), paired_devices(false)]) else {
+        return None;
+    };
+    let mut connected = std::collections::BTreeMap::new();
+    for device in devices {
+        if device.connected? {
+            connected.insert(
+                device.address.unwrap_or_else(|| device.id.to_string()),
+                device.name,
+            );
+        }
+    }
+    Some(connected)
+}
+
 fn read_endpoint(info: DeviceInformation, le: bool) -> Option<Device> {
     let id = info.Id().ok()?;
     let properties = info.Properties().ok();

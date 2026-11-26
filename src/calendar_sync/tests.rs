@@ -221,3 +221,44 @@ fn refresh_preserves_cache_on_failure_and_ignores_stale_credentials() {
     );
     assert!(store.state().calendar_sources[0].error.is_none());
 }
+
+#[test]
+fn matching_subscription_snapshots_and_mail_invitation_share_display_and_reminder() {
+    use crate::workspace::event_identity::{identity, visible};
+    let local = parse_snapshot(ICS, CREATED).unwrap();
+    let at = local[0].start_at;
+    let a = namespaced(Uuid::new_v4(), local.clone()).remove(0);
+    let b = namespaced(Uuid::new_v4(), local.clone()).remove(0);
+    let folder = tempdir().unwrap();
+    let mut store = Store::open(folder.path().to_owned()).unwrap();
+    store
+        .update(|s| {
+            s.events = vec![a.clone(), b.clone(), local[0].clone()];
+            s.settings.meeting_lead_minutes = 10;
+            Ok(())
+        })
+        .unwrap();
+    let displayed = visible(&store.state().events);
+    assert_eq!(displayed.len(), 1);
+    assert!(displayed[0].subscription_id.is_none());
+    assert_eq!(identity(&a), identity(&b));
+    assert_eq!(store.state().events.len(), 3);
+    let mut count = 0;
+    store
+        .deliver_due_reminders(at - 600_000, |r| {
+            assert!(r.body.contains("10 分钟"));
+            count += 1;
+            true
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+    store
+        .update(|s| {
+            s.events = vec![b];
+            Ok(())
+        })
+        .unwrap();
+    store
+        .deliver_due_reminders(at - 600_000, |_| panic!("duplicate after source removal"))
+        .unwrap();
+}

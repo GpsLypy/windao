@@ -30,7 +30,7 @@ pub struct Performance {
 
 impl Performance {
     #[cfg(windows)]
-    pub fn show(&mut self, ui: &mut Ui) {
+    pub fn show(&mut self, ui: &mut Ui, store: &mut crate::workspace::Store) {
         let now = Instant::now();
         if self
             .history
@@ -56,6 +56,60 @@ impl Performance {
             .request_repaint_after(SAMPLE_INTERVAL.saturating_sub(now.duration_since(sampled_at)));
 
         self.render(ui, Utc::now());
+        card(ui, |ui| {
+            subhead(ui, "设备状态");
+            let mut enabled = store.state().settings.show_system_status;
+            if ui.checkbox(&mut enabled, "显示电源与输入状态").changed()
+                && let Err(error) = store.update(|state| {
+                    state.settings.show_system_status = enabled;
+                    Ok(())
+                })
+            {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            let mut pinned = store.state().settings.capsule_device_metrics;
+            if ui
+                .checkbox(&mut pinned, "在横向胶囊显示 CPU、内存和电量")
+                .changed()
+                && let Err(error) = store.update(|state| {
+                    state.settings.capsule_device_metrics = pinned;
+                    Ok(())
+                })
+            {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            let mut changes = store.state().settings.capsule_system_changes;
+            if ui
+                .checkbox(&mut changes, "在收起的胶囊短暂提示网络、音量和蓝牙变化")
+                .changed()
+                && let Err(error) = store.update(|state| {
+                    state.settings.capsule_system_changes = changes;
+                    Ok(())
+                })
+            {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            if store.state().settings.show_system_status {
+                let status = crate::windows::system_status::DeviceStatus::read();
+                let power = status.battery.map_or_else(
+                    || status.power.clone(),
+                    |n| format!("{} · {n}%", status.power),
+                );
+                ui.label(format!("电源　{power}"));
+                ui.label(format!(
+                    "大写锁定　{}",
+                    if status.caps {
+                        "已开启"
+                    } else {
+                        "已关闭"
+                    }
+                ));
+                ui.label(format!(
+                    "前台输入语言　{}",
+                    status.language.as_deref().unwrap_or("未知")
+                ));
+            }
+        });
     }
 
     fn render(&self, ui: &mut Ui, now: DateTime<Utc>) {

@@ -127,6 +127,14 @@ cargo build --release --locked
 
 使用 Python 3.11 或更高版本运行 `python package.py target/release/windao.exe` 生成 ZIP。安装 NSIS 3 后加 `--makensis makensis` 可同时生成安装包。
 
+QQ 系统通知需要 Windows 包身份。在可找到 Windows SDK 的 `MakeAppx.exe` 和 `SignTool.exe` 的 PowerShell 中运行：
+
+```powershell
+.\build-msix.ps1 -Executable target/release/windao.exe -Publisher 'CN=Your Publisher' -CertificateThumbprint 'YOUR_CERTIFICATE_THUMBPRINT'
+```
+
+`Publisher` 填写签名证书的完整主体。省略指纹可以生成供检查的未签名 MSIX。设备需要信任签名证书才能安装正式使用的包。安装后在「工作台 → 通知 → QQ 系统通知」主动连接并授权，预览单独开启。NSIS 和便携 ZIP 可使用任务栏闪烁提醒。
+
 </details>
 
 ## 开源与致谢

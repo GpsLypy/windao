@@ -297,8 +297,13 @@ impl Media {
         Ok(())
     }
 
-    pub fn search_lyrics(&mut self) -> Result<(), String> {
-        if !self.can_search_lyrics() {
+    pub fn search_lyrics(&mut self, song_link: &str) -> Result<(), String> {
+        let song_id = if song_link.trim().is_empty() {
+            None
+        } else {
+            Some(lyrics::netease_id(song_link).ok_or("请输入有效的网易云歌曲链接或数字 ID")?)
+        };
+        if self.lyric_request.is_some() || (song_id.is_none() && !self.can_search_lyrics()) {
             return Err("当前曲目缺少用于匹配歌词的信息，或正在查询。".into());
         }
         let track = self
@@ -311,7 +316,7 @@ impl Media {
         std::thread::Builder::new()
             .name("lyrics-lookup".into())
             .spawn(move || {
-                if send.send(lyrics::lookup(&track)).is_ok() {
+                if send.send(lyrics::lookup(&track, song_id)).is_ok() {
                     ctx.request_repaint();
                 }
             })

@@ -23,6 +23,7 @@ struct Scheduled {
     at: i64,
     kind: Kind,
     label: String,
+    lead_minutes: u16,
 }
 
 impl Scheduled {
@@ -37,11 +38,16 @@ impl Scheduled {
     fn single_reminder(&self) -> Reminder {
         Reminder {
             title: match self.kind {
+                Kind::Event(_) if self.lead_minutes > 0 => "日程即将开始",
                 Kind::Event(_) => "日程开始了",
                 Kind::Task(_) => "待办提醒",
             }
             .into(),
-            body: self.label.clone(),
+            body: if self.lead_minutes > 0 {
+                format!("{} · {} 分钟后开始", self.label, self.lead_minutes)
+            } else {
+                self.label.clone()
+            },
         }
     }
 }
@@ -62,14 +68,28 @@ impl Schedule {
             .map(String::as_str)
             .collect();
         let mut entries = Vec::new();
-        for event in state.events.iter().filter(|event| !event.all_day) {
-            let key = format!("event:{}:{}", event.id, event.start_at);
-            if !delivered.contains(key.as_str()) {
+        let previously_sent: HashSet<_> = state
+            .events
+            .iter()
+            .filter(|e| delivered.contains(format!("event:{}:{}", e.id, e.start_at).as_str()))
+            .map(|e| (super::event_identity::identity(e), e.start_at))
+            .collect();
+        let lead = state.settings.meeting_lead_minutes;
+        for event in super::event_identity::visible(&state.events)
+            .into_iter()
+            .filter(|e| !e.all_day)
+        {
+            let meeting = super::event_identity::identity(event);
+            let key = format!("event:{meeting}:{}", event.start_at);
+            if !previously_sent.contains(&(meeting, event.start_at))
+                && !delivered.contains(key.as_str())
+            {
                 entries.push(Scheduled {
                     key,
-                    at: event.start_at,
-                    kind: Kind::Event(event.id),
+                    at: event.start_at.saturating_sub(i64::from(lead) * 60_000),
+                    kind: Kind::Event(meeting),
                     label: event.title.clone(),
+                    lead_minutes: lead,
                 });
             }
         }
@@ -208,6 +228,7 @@ fn task_entry(task: &Task, due: i64, offset: u32, private: bool) -> Scheduled {
         key: format!("todo:{}:{due}:{offset}", task.id),
         at: due - i64::from(offset) * 60_000,
         kind: Kind::Task(task.id),
+        lead_minutes: 0,
         label: if private {
             "有一项待办需要关注".into()
         } else {
@@ -231,10 +252,15 @@ fn summarize(pending: &[&Scheduled]) -> Option<Reminder> {
         .filter(|kind| matches!(kind, Kind::Event(_)))
         .count();
     let tasks = items.len() - events;
+    let event_status = if pending.iter().any(|entry| entry.lead_minutes > 0) {
+        "需要关注"
+    } else {
+        "已开始"
+    };
     let body = match (events, tasks) {
         (0, tasks) => format!("{tasks} 项待办需要关注"),
-        (events, 0) => format!("{events} 场日程已开始"),
-        (events, tasks) => format!("{events} 场日程已开始，{tasks} 项待办需要关注"),
+        (events, 0) => format!("{events} 场日程{event_status}"),
+        (events, tasks) => format!("{events} 场日程{event_status}，{tasks} 项待办需要关注"),
     };
     Some(Reminder {
         title: "NotchCalendar 提醒".into(),

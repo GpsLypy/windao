@@ -8,7 +8,9 @@ use super::{Page, Workbench, accent};
 impl Page {
     fn group(self) -> &'static str {
         match self {
-            Self::Today | Self::Calendar | Self::Notifications | Self::Tasks => "工作区",
+            Self::AiUsage | Self::Today | Self::Calendar | Self::Notifications | Self::Tasks => {
+                "工作区"
+            }
             Self::Focus | Self::Notes | Self::Dates => "工具",
             #[cfg(windows)]
             Self::Music | Self::Weather => "工具",
@@ -204,6 +206,9 @@ fn nav_row(ui: &mut Ui, page: Page, selected: bool) -> bool {
 
 fn tile_colors(page: Page) -> (Color32, Color32) {
     let color = match page {
+        #[cfg(windows)]
+        Page::Mailbox => Color32::from_rgb(61, 110, 150),
+        Page::AiUsage => Color32::from_rgb(57, 108, 147),
         Page::Today => Color32::from_rgb(37, 119, 237),
         Page::Calendar => Color32::from_rgb(207, 68, 75),
         Page::Tasks => Color32::from_rgb(192, 102, 16),
@@ -256,6 +261,12 @@ pub(super) fn draw_icon(ui: &Ui, page: Page, center: Pos2, color: Color32, scale
         p.circle_stroke(at(x, y), r * scale, stroke);
     };
     match page {
+        Page::AiUsage => {
+            line((-7., 5.), (-7., 0.));
+            line((-2., 5.), (-2., -5.));
+            line((3., 5.), (3., -2.));
+            line((7., 5.), (7., -7.));
+        }
         Page::Today => {
             ring(0., 0., 4.);
             for (x, y) in [
@@ -281,6 +292,12 @@ pub(super) fn draw_icon(ui: &Ui, page: Page, center: Pos2, color: Color32, scale
             rect(-7., -7., 14., 14.);
             line((-4., 0.), (-1., 3.));
             line((-1., 3.), (4., -3.));
+        }
+        #[cfg(windows)]
+        Page::Mailbox => {
+            rect(-8., -5., 16., 11.);
+            line((-7., -4.), (0., 1.));
+            line((0., 1.), (7., -4.));
         }
         Page::Notifications => {
             ring(0., -1., 5.);

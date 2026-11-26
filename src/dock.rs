@@ -20,6 +20,38 @@ impl DockEdge {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CapsuleShape {
+    #[default]
+    Pill,
+    Notch,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CapsuleSkin {
+    #[default]
+    Classic,
+    Cream,
+    GlassLight,
+    GlassDark,
+    Cloud,
+}
+
+impl CapsuleSkin {
+    pub const ALL: [(Self, &'static str); 5] = [
+        (Self::Classic, "经典黑"),
+        (Self::Cream, "奶油"),
+        (Self::GlassLight, "浅色玻璃"),
+        (Self::GlassDark, "深色玻璃"),
+        (Self::Cloud, "悬浮云"),
+    ];
+    pub fn glass(self) -> bool {
+        matches!(self, Self::GlassLight | Self::GlassDark)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CapsulePage {
@@ -70,6 +102,9 @@ pub struct DockSettings {
     pub clock_24h: bool,
     pub top_lyrics: bool,
     pub translucent: bool,
+    pub skin: CapsuleSkin,
+    pub shape: CapsuleShape,
+    pub companion: bool,
     pub exclude_from_capture: bool,
     pub avoid_browsers: bool,
     pub hide_fullscreen: bool,
@@ -88,6 +123,9 @@ impl Default for DockSettings {
             clock_24h: true,
             top_lyrics: false,
             translucent: false,
+            skin: CapsuleSkin::Classic,
+            shape: CapsuleShape::Pill,
+            companion: false,
             exclude_from_capture: false,
             avoid_browsers: true,
             hide_fullscreen: true,

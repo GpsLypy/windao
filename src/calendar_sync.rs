@@ -1,4 +1,5 @@
 mod caldav;
+mod exchange;
 #[cfg(windows)]
 mod http;
 
@@ -28,11 +29,43 @@ pub(super) struct Request<'a> {
 
 #[cfg(windows)]
 pub(crate) fn get_json(url: &Url) -> Result<(u16, String)> {
+    get_json_response(url, None)
+}
+
+#[cfg(windows)]
+pub(crate) fn get_provider_json(
+    provider: crate::provider_balances::Provider,
+    authorization: &str,
+) -> Result<(u16, String)> {
+    let url = Url::parse(provider.endpoint()).expect("fixed HTTPS provider address");
+    get_json_response(&url, Some(authorization))
+}
+
+#[cfg(windows)]
+pub(crate) fn authorized_json(
+    method: &str,
+    url: &Url,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> Result<(u16, String)> {
+    http::Http::open()?.authorized_json(method, url, headers, body)
+}
+
+#[cfg(windows)]
+pub(crate) fn get_weather_json(url: &Url, key: &str) -> Result<String> {
+    if key.is_empty() || key.bytes().any(|b| !b.is_ascii_graphic()) {
+        return Err("和风天气密钥格式无效。".into());
+    }
+    http::Http::open()?.weather(url, key)
+}
+
+#[cfg(windows)]
+pub(crate) fn get_json_response(url: &Url, authorization: Option<&str>) -> Result<(u16, String)> {
     let response = http::Http::open()?.request_accept(
         Request {
             method: "GET",
             url,
-            authorization: None,
+            authorization,
             depth: None,
             body: "",
         },
@@ -70,7 +103,7 @@ fn snapshot(
     now: i64,
     mut request: impl FnMut(Request<'_>) -> Result<Response>,
 ) -> Result<Vec<Event>> {
-    let mut events = match kind {
+    let events = match kind {
         CalendarSourceKind::Ics => {
             let response = request(Request {
                 method: "GET",
@@ -87,14 +120,19 @@ fn snapshot(
             }
             parse_snapshot(&response.body, now)?
         }
+        CalendarSourceKind::Exchange => return Err("Exchange 需要二进制同步连接。".into()),
         CalendarSourceKind::CalDav => caldav::fetch(url, auth, now, &mut request)?,
     };
+    Ok(namespaced(source_id, events))
+}
+
+fn namespaced(source_id: Uuid, mut events: Vec<Event>) -> Vec<Event> {
     let mut seen = std::collections::HashSet::new();
     for event in &mut events {
         namespace(source_id, event);
     }
     events.retain(|event| seen.insert(event.id));
-    Ok(events)
+    events
 }
 
 fn namespace(source_id: Uuid, event: &mut Event) {

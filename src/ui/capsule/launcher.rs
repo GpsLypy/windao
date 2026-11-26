@@ -3,11 +3,7 @@ use eframe::egui::{
     vec2,
 };
 
-use super::{CAPTION, INK, Page, SIGNAL};
-
-const PILL: Color32 = Color32::from_rgb(37, 37, 39);
-const HOVER: Color32 = Color32::from_rgb(51, 51, 55);
-const ACTIVE: Color32 = Color32::from_rgb(19, 32, 55);
+use super::{Page, skin::Palette};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Entry {
@@ -26,6 +22,7 @@ const GROUPS: &[(&str, &[Entry])] = &[
         "效率",
         &[
             Open(Page::Calendar),
+            Open(Page::AiUsage),
             Open(Page::Notes),
             Open(Page::Tasks),
             Open(Page::Focus),
@@ -44,6 +41,8 @@ const GROUPS: &[(&str, &[Entry])] = &[
             #[cfg(windows)]
             Open(Page::Music),
             Open(Page::Notifications),
+            #[cfg(windows)]
+            Open(Page::Mailbox),
         ],
     ),
     (
@@ -175,6 +174,7 @@ fn enabled(entry: Entry, inline_pages: &[Page]) -> bool {
 }
 
 fn row(ui: &mut Ui, entry: Entry, active: bool, scale: f32) -> bool {
+    let tone = Palette::from_ui(ui);
     let text = entry.label();
     let (rect, response) =
         ui.allocate_exact_size(vec2(ui.available_width(), 30.0 * scale), Sense::click());
@@ -186,18 +186,18 @@ fn row(ui: &mut Ui, entry: Entry, active: bool, scale: f32) -> bool {
         rect,
         (15.0 * scale) as u8,
         if active {
-            ACTIVE
+            tone.selected
         } else if hot {
-            HOVER
+            tone.border
         } else {
-            PILL
+            tone.card
         },
     );
     if response.has_focus() {
         ui.painter().rect_stroke(
             rect,
             (15.0 * scale) as u8,
-            Stroke::new(scale, SIGNAL),
+            Stroke::new(scale, tone.signal),
             StrokeKind::Inside,
         );
     }
@@ -205,7 +205,7 @@ fn row(ui: &mut Ui, entry: Entry, active: bool, scale: f32) -> bool {
     entry.icon(
         ui,
         pos2(rect.left() + 17.0 * scale, center.y),
-        if active { SIGNAL } else { CAPTION },
+        if active { tone.signal } else { tone.caption },
         scale,
     );
     ui.painter().text(
@@ -213,7 +213,7 @@ fn row(ui: &mut Ui, entry: Entry, active: bool, scale: f32) -> bool {
         Align2::LEFT_CENTER,
         text,
         FontId::proportional(13.0 * scale),
-        INK,
+        tone.ink,
     );
     if let Some((key, hint)) = entry.shortcut() {
         if rect.width() > 131.0 * scale {
@@ -222,7 +222,7 @@ fn row(ui: &mut Ui, entry: Entry, active: bool, scale: f32) -> bool {
                 Align2::RIGHT_CENTER,
                 hint,
                 FontId::proportional(10.0 * scale),
-                CAPTION,
+                tone.caption,
             );
         }
         if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, key)) {
@@ -239,13 +239,14 @@ pub(super) fn show(
     pages: &[Page],
     s: f32,
 ) -> Option<Entry> {
+    let tone = Palette::from_ui(ui);
     ui.horizontal(|ui| {
         let field_width = (ui.available_width() - 86.0 * s).max(72.0 * s);
         let edit = egui::TextEdit::singleline(query)
             .hint_text("搜索功能")
             .desired_width(field_width)
             .font(FontId::proportional(13.0 * s))
-            .background_color(Color32::from_gray(27))
+            .background_color(tone.card)
             .margin(egui::Margin::symmetric((10.0 * s) as i8, (5.0 * s) as i8))
             .id_salt("capsule-launcher-search");
         ui.add_sized(vec2(field_width, 28.0 * s), edit);
@@ -253,7 +254,7 @@ pub(super) fn show(
             .add_sized(
                 vec2(78.0, 28.0) * s,
                 egui::Button::new(RichText::new("退出应用").size(12.0 * s))
-                    .fill(PILL)
+                    .fill(tone.card)
                     .corner_radius((14.0 * s) as u8),
             )
             .clicked()
@@ -278,7 +279,7 @@ pub(super) fn show(
     if groups.is_empty() {
         ui.label(
             RichText::new("没有匹配的功能")
-                .color(CAPTION)
+                .color(tone.caption)
                 .size(13.0 * s),
         );
         return None;
@@ -302,7 +303,7 @@ pub(super) fn show(
                     for (cell, (title, entries)) in cells.iter_mut().zip(band) {
                         cell.horizontal(|ui| {
                             ui.add_space(5.0 * s);
-                            ui.label(RichText::new(*title).size(11.0 * s).color(CAPTION));
+                            ui.label(RichText::new(*title).size(11.0 * s).color(tone.caption));
                         });
                         for &page in entries {
                             if row(cell, page, Some(page) == active.map(Open), s) {

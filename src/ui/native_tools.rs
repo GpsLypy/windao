@@ -7,6 +7,7 @@ use crate::windows;
 
 use super::{card, title};
 
+mod drag;
 mod shelf;
 
 use shelf::{CAPACITY, Shelf};
@@ -49,9 +50,6 @@ impl NativeTools {
             None => {
                 self.notice = Some(Err(io::Error::other("请拖入本机文件或文件夹")));
             }
-            Some(paths) if !paths.is_empty() => {
-                self.notice = Some(Err(io::Error::other("激活后可添加文件或文件夹")));
-            }
             _ => {}
         }
 
@@ -88,6 +86,7 @@ impl NativeTools {
                 ui.weak("将本机文件或文件夹拖到此窗口。");
             }
 
+            let mut dragged = None;
             for entry in &shelf.entries {
                 ui.separator();
                 ui.push_id(entry.id, |ui| {
@@ -109,6 +108,13 @@ impl NativeTools {
                             self.selected.remove(&entry.id);
                         }
                     }
+                    let handle = ui.add_enabled(
+                        available,
+                        egui::Label::new("拖到其他应用").sense(egui::Sense::drag()),
+                    );
+                    if handle.drag_started_by(egui::PointerButton::Primary) {
+                        dragged = Some(entry.id);
+                    }
                     let path = entry.path.to_string_lossy();
                     ui.add(Label::new(RichText::new(path.as_ref()).weak()).truncate())
                         .on_hover_text(path.as_ref());
@@ -116,6 +122,9 @@ impl NativeTools {
                         ui.colored_label(ui.visuals().warn_fg_color, "文件已移动或暂不可用");
                     }
                 });
+            }
+            if let Some(id) = dragged {
+                self.notice = shelf.action(id, drag::start).err().map(Err);
             }
             if !shelf.entries.is_empty() {
                 ui.separator();

@@ -105,7 +105,7 @@ where
             .join(href)
             .map_err(|_| "CalDAV 服务器返回了无效地址。")?;
         let url = source_url(joined.as_str())?;
-        if url.origin() != self.origin.origin() {
+        if url.origin() != self.origin.origin() && !icloud_shard(self.origin, &url) {
             return Err("CalDAV 服务器给出了不同主机的地址。请直接填写目标服务器地址。".into());
         }
         Ok(url)
@@ -183,6 +183,20 @@ where
         collections.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
         Ok(collections)
     }
+}
+
+fn icloud_shard(origin: &Url, url: &Url) -> bool {
+    let shard = |host: &str| {
+        host.strip_prefix('p')
+            .and_then(|s| s.strip_suffix("-caldav.icloud.com"))
+            .is_some_and(|s| (1..=3).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit()))
+    };
+    origin.scheme() == "https"
+        && url.scheme() == "https"
+        && origin.port_or_known_default() == Some(443)
+        && url.port_or_known_default() == Some(443)
+        && origin.host_str() == Some("caldav.icloud.com")
+        && url.host_str().is_some_and(shard)
 }
 
 fn query_body(now: i64) -> Result<String> {

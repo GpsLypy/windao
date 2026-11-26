@@ -37,14 +37,14 @@ impl Drop for Connection {
 impl Connection {
     fn validate(&self, kind: CalendarSourceKind) -> Result<url::Url> {
         let url = source_url(&self.url)?;
-        if kind == CalendarSourceKind::CalDav
+        if kind != CalendarSourceKind::Ics
             && (self.username.trim().is_empty()
                 || self.username.contains(':')
                 || self.username.len() > 1024
                 || self.password.is_empty()
                 || self.password.len() > 4096)
         {
-            return Err("请输入 CalDAV 用户名和应用专用密码。".into());
+            return Err("请输入日历用户名和应用专用密码。".into());
         }
         Ok(url)
     }
@@ -270,7 +270,7 @@ impl CalendarSync {
 fn refresh(kind: CalendarSourceKind, id: Uuid, sealed: &str) -> Result<Vec<Event>> {
     let connection = Connection::unprotect(sealed)?;
     let url = connection.validate(kind)?;
-    let auth = (kind == CalendarSourceKind::CalDav).then(|| {
+    let auth = (kind != CalendarSourceKind::Ics).then(|| {
         let input = Zeroizing::new(format!(
             "{}:{}",
             connection.username.trim(),
@@ -279,6 +279,34 @@ fn refresh(kind: CalendarSourceKind, id: Uuid, sealed: &str) -> Result<Vec<Event
         Zeroizing::new(format!("Basic {}", STANDARD.encode(input.as_bytes())))
     });
     let http = Http::open()?;
+    if kind == CalendarSourceKind::Exchange {
+        let mut endpoint = url;
+        if endpoint.path().trim_end_matches('/').is_empty() {
+            endpoint.set_path("/Microsoft-Server-ActiveSync");
+        }
+        endpoint.set_query(None);
+        let device_id = id.simple().to_string();
+        let events = super::exchange::fetch(Utc::now().timestamp_millis(), |command, body| {
+            let mut target = endpoint.clone();
+            target.query_pairs_mut().extend_pairs([
+                ("Cmd", command),
+                ("User", connection.username.trim()),
+                ("DeviceId", &device_id),
+                ("DeviceType", "NotchCalendar"),
+            ]);
+            http.exchange(
+                super::Request {
+                    method: "POST",
+                    url: &target,
+                    authorization: auth.as_deref().map(String::as_str),
+                    depth: None,
+                    body: "",
+                },
+                &body,
+            )
+        })?;
+        return Ok(super::namespaced(id, events));
+    }
     snapshot(
         kind,
         id,

@@ -9,6 +9,7 @@ use eframe::egui::{
 use crate::dock::CapsulePage;
 use crate::workspace::{Appearance, Store};
 
+mod ai_meter;
 mod calendar;
 pub(crate) mod capsule;
 #[cfg(windows)]
@@ -21,6 +22,8 @@ mod focus;
 mod gold;
 mod lunar_calendar;
 #[cfg(windows)]
+mod mailbox;
+#[cfg(windows)]
 mod music;
 #[cfg(windows)]
 mod native_tools;
@@ -28,6 +31,8 @@ mod navigation;
 mod notes_extra;
 #[cfg(any(windows, test))]
 mod plugins;
+#[cfg(windows)]
+mod provider_balances;
 #[cfg(any(windows, test))]
 mod salary;
 mod settings;
@@ -40,14 +45,17 @@ mod today;
 #[cfg(any(windows, test))]
 mod weather;
 #[cfg(windows)]
-mod wireless;
+pub(crate) mod wireless;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Page {
     #[default]
     Today,
+    AiUsage,
     Calendar,
     Notifications,
+    #[cfg(windows)]
+    Mailbox,
     Tasks,
     #[cfg(windows)]
     Music,
@@ -78,7 +86,10 @@ impl Page {
         Self::Today,
         Self::Calendar,
         Self::Notifications,
+        #[cfg(windows)]
+        Self::Mailbox,
         Self::Tasks,
+        Self::AiUsage,
         #[cfg(windows)]
         Self::Music,
         Self::Focus,
@@ -106,7 +117,10 @@ impl Page {
     fn title(self) -> &'static str {
         match self {
             Self::Today => "今天",
+            Self::AiUsage => "AI 用量",
             Self::Calendar => "日历",
+            #[cfg(windows)]
+            Self::Mailbox => "邮件",
             Self::Notifications => "通知",
             Self::Tasks => "待办",
             #[cfg(windows)]
@@ -430,7 +444,7 @@ fn local_timestamp(timestamp: i64) -> Option<DateTime<Local>> {
     Local.timestamp_millis_opt(timestamp).single()
 }
 
-fn display_time(timestamp: i64, format: &str) -> String {
+pub(crate) fn display_time(timestamp: i64, format: &str) -> String {
     local_timestamp(timestamp)
         .map(|time| time.format(format).to_string())
         .unwrap_or_default()
@@ -472,7 +486,10 @@ pub struct Workbench {
     brand_icon: Option<egui::TextureHandle>,
     navigation_query: String,
     calendar: calendar::Calendar,
+    #[cfg(windows)]
+    mailbox: mailbox::Inbox,
     tasks: tasks::Tasks,
+    pub(crate) ai_meter: ai_meter::AiMeter,
     focus: focus::Timer,
     #[cfg(windows)]
     player: music::Player,
@@ -496,8 +513,18 @@ pub struct Workbench {
     #[cfg(windows)]
     plugins: plugins::Plugins,
     notice: Option<Result<String, String>>,
+    #[cfg(windows)]
+    pub(crate) qq_listener: crate::windows::qq_notifications::QqListener,
+    #[cfg(windows)]
+    pub(crate) alert_windows: Vec<crate::windows::WindowRow>,
+    #[cfg(windows)]
+    pub(crate) open_alert_window: Option<u64>,
+    #[cfg(windows)]
+    pub(crate) open_wechat: bool,
     taskbar_notifications_active: bool,
     taskbar_notifications_cleared: bool,
+    #[cfg(windows)]
+    updates: crate::updates::desktop::Updates,
     settings_section: settings::Section,
     settings_return_page: Page,
     dock_settings: dock_settings::Editor,
@@ -528,8 +555,17 @@ impl Workbench {
     }
 
     #[cfg(windows)]
-    pub fn poll_clipboard(&mut self, ctx: &egui::Context) {
-        self.clipboard.poll(ctx);
+    pub fn poll_resident_weather(&mut self, ctx: &egui::Context, directory: &Path) {
+        self.weather.tick(ctx, directory, false);
+    }
+    #[cfg(windows)]
+    pub fn resident_weather(&self) -> Option<String> {
+        self.weather.caption()
+    }
+
+    #[cfg(windows)]
+    pub fn poll_clipboard(&mut self, ctx: &egui::Context, directory: &Path) {
+        self.clipboard.poll(ctx, directory);
     }
 
     #[cfg(windows)]
@@ -608,6 +644,7 @@ impl Workbench {
                     .id_salt(self.page.title())
                     .show(ui, |ui| match self.page {
                         Page::Today => self.today(ui, store),
+                        Page::AiUsage => self.ai_meter.show(ui, store),
                         Page::Calendar => self.calendar.show(
                             ui,
                             store,
@@ -615,6 +652,8 @@ impl Workbench {
                             #[cfg(windows)]
                             &mut sources.calendar,
                         ),
+                        #[cfg(windows)]
+                        Page::Mailbox => self.mailbox.show(ui, store),
                         Page::Notifications => self.notifications(ui, store),
                         Page::Tasks => self.tasks.show(ui, store, &mut self.notice),
                         #[cfg(windows)]
@@ -630,7 +669,7 @@ impl Workbench {
                         }
                         Page::Dates => self.dates.show(ui, store, &mut self.notice),
                         #[cfg(windows)]
-                        Page::Weather => self.weather.show(ui),
+                        Page::Weather => self.weather.show(ui, store.directory()),
                         #[cfg(windows)]
                         Page::Tools => self.salary.show(ui, store.directory()),
                         #[cfg(windows)]
@@ -638,9 +677,9 @@ impl Workbench {
                         #[cfg(windows)]
                         Page::Files => self.tools.render(ui, store.directory()),
                         #[cfg(windows)]
-                        Page::Performance => self.performance.show(ui),
+                        Page::Performance => self.performance.show(ui, store),
                         #[cfg(windows)]
-                        Page::Clipboard => self.clipboard.show(ui),
+                        Page::Clipboard => self.clipboard.show(ui, store.directory()),
                         #[cfg(windows)]
                         Page::Wireless => self.wireless.show(ui),
                         #[cfg(windows)]
@@ -654,6 +693,8 @@ impl Workbench {
 
     fn notifications(&mut self, ui: &mut Ui, store: &mut Store) {
         title(ui, "通知");
+        #[cfg(windows)]
+        card(ui, |ui| self.qq_listener.show(ui));
         card(ui, |ui| {
             ui.heading("第三方任务栏提示");
             let mut enabled = store.state().settings.taskbar_notifications;
@@ -674,7 +715,29 @@ impl Workbench {
                         }),
                 );
             }
-            ui.weak("支持微信、企业微信、飞书和钉钉。仅保存应用名称和闪烁时间。");
+            ui.weak("记录 QQ、微信、企业微信、飞书和钉钉的任务栏闪烁。历史仅保存来源应用和时间。");
+            #[cfg(windows)]
+            if enabled && !self.alert_windows.is_empty() {
+                ui.label("待查看的窗口");
+                ui.horizontal_wrapped(|ui| {
+                    for row in &self.alert_windows {
+                        if ui
+                            .button(format!("{} · 窗口 {}", row.app.label(), row.number))
+                            .clicked()
+                        {
+                            self.open_alert_window = Some(row.id);
+                        }
+                    }
+                });
+            }
+            #[cfg(windows)]
+            if ui
+                .button("打开托盘中的微信")
+                .on_hover_text("打开微信客户端。多账号时可在微信中选择，或点击上方对应窗口。")
+                .clicked()
+            {
+                self.open_wechat = true;
+            }
             let state = store.state();
             if state.settings.taskbar_notifications && !self.taskbar_notifications_active {
                 ui.weak("暂时无法监听 Windows 任务栏闪烁。");

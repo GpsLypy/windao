@@ -1,6 +1,10 @@
 Unicode true
 !include "MUI2.nsh"
 !include "x64.nsh"
+!include "FileFunc.nsh"
+
+Var UpdateMode
+Var InstallerMutex
 
 !define PRODUCT "NotchCalendar"
 !define APP_EXE "NotchCalendar.exe"
@@ -31,9 +35,18 @@ VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "FileVersion" "${PRODUCT_VERSION}"
 VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "LegalCopyright" ""
 
 !macro LockInstallation
+  StrCpy $2 0
+  retry_lock:
   System::Call 'kernel32::CreateMutexW(p 0, i 0, w "${APP_MUTEX}") p .r0 ?e'
   Pop $1
   ${If} $1 == 183
+    System::Call 'kernel32::CloseHandle(p r0)'
+    ${If} $UpdateMode == "1"
+    ${AndIf} $2 < 80
+      IntOp $2 $2 + 1
+      Sleep 250
+      Goto retry_lock
+    ${EndIf}
     MessageBox MB_OK|MB_ICONEXCLAMATION "请先从托盘退出 ${PRODUCT}，然后重试。" /SD IDOK
     SetErrorLevel 1
     Abort
@@ -42,6 +55,7 @@ VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "LegalCopyright" ""
     SetErrorLevel 1
     Abort
   ${EndIf}
+  StrCpy $InstallerMutex $0
 !macroend
 
 Function .onInit
@@ -50,7 +64,33 @@ Function .onInit
     SetErrorLevel 1
     Abort
   ${EndIf}
+  SetRegView 64
+  ReadRegStr $0 HKLM "Software\Microsoft\Windows NT\CurrentVersion" "CurrentBuildNumber"
+  ${If} $0 < 19041
+    MessageBox MB_OK|MB_ICONSTOP "此版本需要 Windows 10 版本 2004（内部版本 19041）或更高版本。" /SD IDOK
+    SetErrorLevel 1
+    Abort
+  ${EndIf}
+  ${GetParameters} $0
+  ClearErrors
+  ${GetOptions} $0 "/UPDATE" $1
+  ${IfNot} ${Errors}
+    StrCpy $UpdateMode "1"
+    SetAutoClose true
+    SetRegView 64
+    ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "InstallLocation"
+    ${If} $0 != ""
+      StrCpy $INSTDIR $0
+    ${EndIf}
+  ${EndIf}
   !insertmacro LockInstallation
+FunctionEnd
+
+Function .onInstSuccess
+  ${If} $UpdateMode == "1"
+    System::Call 'kernel32::CloseHandle(p $InstallerMutex)'
+    Exec '"$INSTDIR\${APP_EXE}"'
+  ${EndIf}
 FunctionEnd
 
 Section "安装"

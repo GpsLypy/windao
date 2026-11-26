@@ -5,11 +5,15 @@ use eframe::egui::{self, ColorImage, RichText, TextureHandle, TextureOptions, Ui
 use crate::music::{Command, LyricLines, Media, PlaybackState, Snapshot, Status};
 
 use super::{accent, card, title};
+mod mixer;
 
 #[derive(Default)]
 pub(super) struct Player {
     artwork: Option<(Arc<ColorImage>, TextureHandle)>,
     dragging_to: Option<(u64, f64)>,
+    mixer: mixer::Mixer,
+    netease: String,
+    lyric_generation: Option<u64>,
 }
 
 impl Player {
@@ -183,24 +187,40 @@ impl Player {
         } else {
             self.dragging_to = None;
         }
+        self.mixer.show(ui, &track.source);
         transport(ui, media, track, command)
     }
 
-    fn lyrics(&self, ui: &mut Ui, media: &mut Media, track: &Snapshot) -> Result<(), String> {
+    fn lyrics(&mut self, ui: &mut Ui, media: &mut Media, track: &Snapshot) -> Result<(), String> {
         if track.title.trim().is_empty() {
             return Ok(());
         }
         ui.add_space(8.0);
 
+        if self.lyric_generation != Some(track.generation) {
+            self.netease.clear();
+            self.lyric_generation = Some(track.generation);
+        }
+        ui.collapsing("按网易云歌曲 ID 查找", |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.netease)
+                    .hint_text("歌曲链接或数字 ID")
+                    .char_limit(512),
+            );
+        });
         let (import, search) = ui
             .horizontal_wrapped(|ui| {
                 let import = ui.button("导入 LRC").clicked();
                 let search = ui
                     .add_enabled(
-                        media.can_search_lyrics() && !media.has_lyrics(),
+                        !media.searching_lyrics()
+                            && (!self.netease.trim().is_empty()
+                                || (media.can_search_lyrics() && !media.has_lyrics())),
                         egui::Button::new("在线查找歌词"),
                     )
-                    .on_hover_text("将当前曲目的名称、歌手、专辑和时长发送至 LRCLIB 查询")
+                    .on_hover_text(
+                        "按指定歌曲 ID 查询网易云，自动匹配会向网易云或 LRCLIB 提交当前曲目信息",
+                    )
                     .clicked();
                 if media.searching_lyrics() {
                     ui.spinner();
@@ -221,7 +241,7 @@ impl Player {
             }
         }
         if search {
-            media.search_lyrics()?;
+            media.search_lyrics(&self.netease)?;
         }
         Ok(())
     }

@@ -171,6 +171,38 @@ impl Library {
         Ok(())
     }
 
+    fn update_catalog(&mut self, manifest: Manifest) -> Result<(), &'static str> {
+        manifest.validate()?;
+        if !manifest.id.starts_with("catalog.") {
+            return Err("不属于在线目录的组件。");
+        }
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.manifest.id == manifest.id)
+            .ok_or("请先安装组件。")?;
+        let checked: BTreeSet<_> = match (&entry.manifest.widget, &manifest.widget) {
+            (Widget::Checklist { items: old }, Widget::Checklist { items: new }) => {
+                // A repeated title is matched by occurrence when checklist items move.
+                let mut available: Vec<_> = old.iter().enumerate().collect();
+                new.iter()
+                    .enumerate()
+                    .filter_map(|(index, title)| {
+                        let pos = available
+                            .iter()
+                            .position(|(_, previously)| *previously == title)?;
+                        let (old_index, _) = available.remove(pos);
+                        entry.checked.contains(&old_index).then_some(index)
+                    })
+                    .collect()
+            }
+            _ => BTreeSet::new(),
+        };
+        entry.checked = checked;
+        entry.manifest = manifest;
+        Ok(())
+    }
+
     fn install(&mut self, manifest: Manifest) -> Result<(), &'static str> {
         if let Some(entry) = self
             .entries
@@ -370,12 +402,19 @@ impl Plugins {
                     card(ui, |ui| {
                         subhead(ui, &manifest.title);
                         preview(ui, &manifest.widget);
-                        if updated
+                        if let Some(entry) = updated
                             .entries
                             .iter()
-                            .any(|entry| entry.manifest.id == manifest.id)
+                            .find(|entry| entry.manifest.id == manifest.id)
                         {
-                            ui.weak("在我的组件中管理");
+                            if entry.manifest == *manifest {
+                                ui.weak("已是目录当前版本");
+                            } else if ui.button("更新到目录版本").clicked() {
+                                match updated.update_catalog(manifest.clone()) {
+                                    Ok(()) => changed = true,
+                                    Err(error) => self.error = Some(error),
+                                }
+                            }
                         } else if ui.button("安装").clicked() {
                             match updated.install(manifest.clone()) {
                                 Ok(()) => changed = true,
@@ -563,5 +602,30 @@ mod tests {
         let mut collision = manifest;
         collision.title = "新名称".to_owned();
         assert!(library.install(collision).is_err());
+    }
+}
+
+#[cfg(test)]
+mod updates {
+    use super::*;
+    #[test]
+    fn catalog_update_preserves_status_and_matches_checks_after_reordering() {
+        let mut old = Manifest::parse(br#"{"version":1,"id":"catalog.example","title":"Sample","widget":{"type":"checklist","items":["a","b","a"]}}"#).unwrap();
+        let mut library = Library::default();
+        library.install(old.clone()).unwrap();
+        let row = &mut library.entries[0];
+        row.checked.insert(2);
+        row.status = Status::Disabled;
+        old.widget = Widget::Checklist {
+            items: ["b", "a", "a", "c"].map(str::to_owned).into(),
+        };
+        library.update_catalog(old.clone()).unwrap();
+        assert_eq!(library.entries[0].checked, BTreeSet::from([2]));
+        assert_eq!(library.entries[0].status, Status::Disabled);
+        old.widget = Widget::Text {
+            body: "changed".into(),
+        };
+        library.update_catalog(old).unwrap();
+        assert!(library.entries[0].checked.is_empty());
     }
 }

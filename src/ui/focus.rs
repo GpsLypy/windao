@@ -8,7 +8,7 @@ use eframe::egui::{self, FontId, RichText, Stroke, Ui, vec2};
 use uuid::Uuid;
 
 use super::{card, display_time, field, primary, subhead, title};
-use crate::workspace::{Focus, FocusKind, HEALTH_INTERVAL, HealthKind, Store};
+use crate::workspace::{Focus, FocusKind, HEALTH_INTERVAL, HealthKind, ReminderHours, Store};
 
 #[derive(Default)]
 pub(super) struct Timer {
@@ -281,21 +281,83 @@ fn health_reminders(
                 }
                 if let Err(error) = store.update(|state| {
                     *state.health.timer_mut(kind) = timer;
+                    state.health.fit_deadlines(now.timestamp_millis());
                     Ok(())
                 }) {
                     *notice = Some(Err(error));
                 }
             }
         }
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new(format!(
-                    "今日饮水 {} 次",
-                    store.state().health.water_count(today)
+        let health = &store.state().health;
+        let mut hours = health.hours;
+        let mut quiet = health.quiet;
+        let mut goal = health.goal_ml;
+        let mut serving = health.serving_ml;
+        let changed = ui
+            .horizontal_wrapped(|ui| {
+                ui.label("每日目标");
+                let a = ui
+                    .add(
+                        egui::DragValue::new(&mut goal)
+                            .range(100..=10000)
+                            .suffix(" mL"),
+                    )
+                    .changed();
+                ui.label("每次饮水");
+                let b = ui
+                    .add(
+                        egui::DragValue::new(&mut serving)
+                            .range(10..=2000)
+                            .suffix(" mL"),
+                    )
+                    .changed();
+                a || b
+            })
+            .inner;
+        let range_changed = edit_hours(
+            ui,
+            "仅在指定时段提醒",
+            &mut hours,
+            ReminderHours {
+                start: 9 * 60,
+                end: 18 * 60,
+            },
+        );
+        let quiet_changed = edit_hours(
+            ui,
+            "午休免打扰",
+            &mut quiet,
+            ReminderHours {
+                start: 12 * 60,
+                end: 13 * 60,
+            },
+        );
+        if (changed || range_changed || quiet_changed)
+            && let Err(error) = store.update(|state| {
+                state.health.goal_ml = goal;
+                state.health.serving_ml = serving;
+                state.health.hours = hours;
+                state.health.quiet = quiet;
+                state.health.fit_deadlines(now.timestamp_millis());
+                Ok(())
+            })
+        {
+            *notice = Some(Err(error));
+        }
+        let health = &store.state().health;
+        let can_undo = health.can_undo_water(today);
+        let drank = health.water_ml(today);
+        ui.add(
+            egui::ProgressBar::new((drank as f32 / health.goal_ml as f32).min(1.0))
+                .text(format!(
+                    "今日 {drank} / {} mL · {} 次",
+                    health.goal_ml,
+                    health.water_count(today)
                 ))
-                .strong(),
-            );
-            if ui.button("记录一次").clicked()
+                .desired_width(ui.available_width().min(400.0)),
+        );
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(format!("记录 {serving} mL")).clicked()
                 && let Err(error) = store.update(|state| {
                     state.health.record_water(today);
                     Ok(())
@@ -303,8 +365,55 @@ fn health_reminders(
             {
                 *notice = Some(Err(error));
             }
+            if ui
+                .add_enabled(can_undo, egui::Button::new("撤销上次记录"))
+                .clicked()
+                && let Err(error) = store.update(|state| {
+                    state.health.undo_water(today);
+                    Ok(())
+                })
+            {
+                *notice = Some(Err(error));
+            }
         });
     });
+}
+
+fn edit_hours(
+    ui: &mut Ui,
+    name: &str,
+    value: &mut Option<ReminderHours>,
+    initial: ReminderHours,
+) -> bool {
+    let previous = *value;
+    ui.push_id(name, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            let mut enabled = value.is_some();
+            if ui.checkbox(&mut enabled, name).changed() {
+                *value = enabled.then_some(initial);
+            }
+            if let Some(range) = value {
+                for (label, minute) in [("从", &mut range.start), ("到", &mut range.end)] {
+                    ui.label(label);
+                    ui.add(
+                        egui::DragValue::new(minute)
+                            .range(0..=1439)
+                            .speed(5)
+                            .custom_formatter(|value, _| {
+                                format!("{:02}:{:02}", value as u16 / 60, value as u16 % 60)
+                            })
+                            .custom_parser(|s| {
+                                let (h, m) = s.trim().split_once(':')?;
+                                let h = h.parse::<u16>().ok()?;
+                                let m = m.parse::<u16>().ok()?;
+                                (h < 24 && m < 60).then(|| f64::from(h * 60 + m))
+                            }),
+                    );
+                }
+            }
+        })
+    });
+    previous != *value
 }
 
 enum Action {

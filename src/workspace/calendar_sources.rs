@@ -11,6 +11,7 @@ pub enum CalendarSourceKind {
     #[default]
     Ics,
     CalDav,
+    Exchange,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

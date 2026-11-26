@@ -59,6 +59,87 @@ impl Http {
     }
 
     pub(super) fn request_accept(&self, input: Request<'_>, accept: &str) -> Result<Response> {
+        let (status, bytes, location) = self.bytes(&input, accept, input.body.as_bytes(), "")?;
+        let body = String::from_utf8(bytes).map_err(|_| "服务器应返回 UTF-8 内容。")?;
+        Ok(Response {
+            status,
+            body,
+            location,
+        })
+    }
+
+    pub(super) fn authorized_json(
+        &self,
+        method: &str,
+        url: &url::Url,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> Result<(u16, String)> {
+        let input = Request {
+            method,
+            url,
+            authorization: None,
+            depth: None,
+            body,
+        };
+        let mut extra = Zeroizing::new(String::new());
+        for &(name, value) in headers {
+            if name.is_empty()
+                || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                || value.len() > 65536
+                || !value.bytes().all(|b| (32..=126).contains(&b))
+            {
+                return Err("请求标头无效。".into());
+            }
+            extra.push_str(name);
+            extra.push_str(": ");
+            extra.push_str(value);
+            extra.push_str("\r\n");
+        }
+        let (status, bytes, _) = self.bytes(&input, "application/json", body.as_bytes(), &extra)?;
+        if bytes.len() > 256 * 1024 {
+            return Err("服务商返回的数据过大。".into());
+        }
+        let text = String::from_utf8(bytes).map_err(|_| "服务商响应格式无效。")?;
+        Ok((status, text))
+    }
+
+    pub(super) fn weather(&self, url: &url::Url, key: &str) -> Result<String> {
+        let input = Request {
+            method: "GET",
+            url,
+            authorization: None,
+            depth: None,
+            body: "",
+        };
+        let header = Zeroizing::new(format!("X-QW-Api-Key: {key}\r\n"));
+        let (status, bytes, _) = self.bytes(&input, "application/json", &[], &header)?;
+        if status != 200 {
+            return Err(format!("和风天气返回 HTTP {status}。"));
+        }
+        String::from_utf8(bytes).map_err(|_| "和风天气响应编码无效。".into())
+    }
+
+    pub(super) fn exchange(&self, input: Request<'_>, body: &[u8]) -> Result<Vec<u8>> {
+        let (status, bytes, _) = self.bytes(
+            &input,
+            "application/vnd.ms-sync.wbxml",
+            body,
+            "MS-ASProtocolVersion: 14.0\r\nContent-Type: application/vnd.ms-sync.wbxml\r\n",
+        )?;
+        match status {
+            200 => Ok(bytes),
+            449 => Err("Exchange 要求受管设备，请联系管理员确认日历同步策略。".into()),
+            other => Err(super::status_error("Exchange 同步", other)),
+        }
+    }
+    fn bytes(
+        &self,
+        input: &Request<'_>,
+        accept: &str,
+        body: &[u8],
+        extra_headers: &str,
+    ) -> Result<(u16, Vec<u8>, Option<String>)> {
         self.check_deadline()?;
         let hostname = wide(input.url.host_str().ok_or("找不到日历服务器地址。")?);
         let connection = Handle::new(unsafe {
@@ -92,6 +173,13 @@ impl Http {
             WINHTTP_OPTION_AUTOLOGON_POLICY,
             WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH,
         )?;
+        if accept == "application/json" {
+            set_u32(
+                &request,
+                WINHTTP_OPTION_DECOMPRESSION,
+                WINHTTP_DECOMPRESSION_FLAG_GZIP | WINHTTP_DECOMPRESSION_FLAG_DEFLATE,
+            )?;
+        }
         let mut headers = Zeroizing::new(format!("Accept: {accept}\r\n"));
         if let Some(authorization) = input.authorization {
             headers.push_str("Authorization: ");
@@ -103,8 +191,9 @@ impl Http {
                 "Depth: {depth}\r\nContent-Type: application/xml; charset=utf-8\r\n"
             ));
         }
+        headers.push_str(extra_headers);
         let headers = Zeroizing::new(wide(&headers));
-        let body = input.body.as_bytes();
+
         win(unsafe {
             WinHttpSendRequest(
                 request.0,
@@ -144,18 +233,10 @@ impl Http {
                 )
             } != 0;
             let location = present.then(|| String::from_utf16_lossy(&value[..bytes as usize / 2]));
-            return Ok(Response {
-                status,
-                body: String::new(),
-                location,
-            });
+            return Ok((status, Vec::new(), location));
         }
         if !matches!(status, 200 | 207) {
-            return Ok(Response {
-                status,
-                body: String::new(),
-                location: None,
-            });
+            return Ok((status, Vec::new(), None));
         }
         let mut body = Vec::new();
         let mut buffer = [0u8; 8192];
@@ -178,12 +259,7 @@ impl Http {
             }
             body.extend_from_slice(&buffer[..read as usize]);
         }
-        let body = String::from_utf8(body).map_err(|_| "日历服务器应返回 UTF-8 内容。")?;
-        Ok(Response {
-            status,
-            body,
-            location: None,
-        })
+        Ok((status, body, None))
     }
 
     fn check_deadline(&self) -> Result<()> {

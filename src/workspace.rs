@@ -1,6 +1,7 @@
 mod notes_extra;
 pub use notes_extra::{Card, MeetingNote};
 mod calendar_sources;
+pub(crate) mod event_identity;
 #[cfg(windows)]
 pub(crate) use calendar_sources::MAX_SOURCES;
 pub use calendar_sources::{CalendarSource, CalendarSourceKind};
@@ -18,7 +19,7 @@ use tempfile::NamedTempFile;
 use uuid::Uuid;
 
 mod health;
-pub use health::{HEALTH_INTERVAL, HealthKind, HealthReminders};
+pub use health::{HEALTH_INTERVAL, HealthKind, HealthReminders, ReminderHours};
 mod reminders;
 pub use reminders::Reminder;
 use reminders::Schedule;
@@ -52,6 +53,7 @@ pub struct Notification {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TaskbarApp {
+    Qq,
     WeChat,
     WeCom,
     Feishu,
@@ -61,6 +63,7 @@ pub enum TaskbarApp {
 impl TaskbarApp {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Qq => "QQ",
             Self::WeChat => "微信",
             Self::WeCom => "企业微信",
             Self::Feishu => "飞书",
@@ -337,7 +340,19 @@ pub struct Settings {
     #[serde(default = "default_reminders")]
     pub reminders: bool,
     #[serde(default)]
+    pub meeting_lead_minutes: u16,
+    #[serde(default)]
     pub taskbar_notifications: bool,
+    #[serde(default)]
+    pub show_system_status: bool,
+    #[serde(default)]
+    pub capsule_device_metrics: bool,
+    #[serde(default)]
+    pub capsule_system_changes: bool,
+    #[serde(default)]
+    pub local_ai_usage: bool,
+    #[serde(default)]
+    pub capsule_ai_usage: bool,
     #[serde(default)]
     pub desktop_todo: DesktopTodoSettings,
 }
@@ -352,7 +367,13 @@ impl Default for Settings {
             display_device: None,
             dock: Default::default(),
             reminders: true,
+            meeting_lead_minutes: 0,
             taskbar_notifications: false,
+            show_system_status: false,
+            capsule_device_metrics: false,
+            capsule_system_changes: false,
+            local_ai_usage: false,
+            capsule_ai_usage: false,
             desktop_todo: DesktopTodoSettings::default(),
         }
     }
@@ -691,7 +712,13 @@ impl From<LegacySettings> for Settings {
             display_device: None,
             dock: Default::default(),
             reminders: settings.reminders,
+            meeting_lead_minutes: 0,
             taskbar_notifications: false,
+            show_system_status: false,
+            capsule_device_metrics: false,
+            capsule_system_changes: false,
+            local_ai_usage: false,
+            capsule_ai_usage: false,
             desktop_todo: DesktopTodoSettings::default(),
         }
     }
@@ -867,6 +894,14 @@ impl Store {
                 self.save_notification(now, ids, reminder)?;
             }
         } else if self.state.settings.reminders {
+            if self.state.health.deadlines().any(|(_, at)| at <= now)
+                && self.state.health.next_allowed(now) > now
+            {
+                self.update(|state| {
+                    state.health.fit_deadlines(now);
+                    Ok(())
+                })?;
+            }
             let deadlines: Vec<_> = self
                 .state
                 .health
@@ -941,8 +976,10 @@ impl Store {
                     }
                 }
                 reminders::mark_delivered(&mut state.delivered_reminder_ids, ids);
+                state.health.fit_deadlines(notification.at);
                 state.notifications.insert(0, notification);
                 state.notifications.truncate(MAX_NOTIFICATIONS);
+
                 Ok(())
             })?;
             self.accepted_notification = None;

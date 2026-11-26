@@ -7,21 +7,17 @@ use eframe::egui::{
 };
 
 use crate::{
-    dock::{DockEdge, DockSettings},
+    dock::{CapsuleSkin, DockEdge, DockSettings},
     workspace::{Focus, Store, Task, TaskStatus, Workspace},
 };
 
 use super::{CapsuleFrame, Page, ShellAction, calendar, focus};
 
+mod companion;
 mod launcher;
 
-const SURFACE: Color32 = Color32::BLACK;
-const CARD: Color32 = Color32::from_rgb(29, 29, 32);
-const BORDER: Color32 = Color32::from_rgb(51, 51, 56);
-const CAPTION: Color32 = Color32::from_rgb(182, 188, 193);
-const INK: Color32 = Color32::from_gray(245);
-const SIGNAL: Color32 = Color32::from_rgb(119, 166, 255);
-const SELECTED: Color32 = Color32::from_rgb(42, 54, 82);
+mod skin;
+use skin::Palette;
 
 pub(crate) struct CapsuleOptions<'a> {
     pub dock: DockEdge,
@@ -47,6 +43,13 @@ pub(crate) struct CapsuleState {
     active: Option<Page>,
     library_open: bool,
     library_query: String,
+    pub(crate) ai_caption: Option<String>,
+    pub(crate) weather_caption: Option<String>,
+    #[cfg(windows)]
+    pub(crate) account_pinned: bool,
+    pub(crate) alert_count: usize,
+    pub(crate) device_caption: String,
+    pub(crate) system_change: Option<String>,
     error: Option<String>,
 }
 
@@ -72,11 +75,51 @@ pub(crate) fn compact_size(store: &Store, dock: &DockSettings, lyrics: Option<&s
         DockEdge::Top | DockEdge::Bottom if dock.minimal => vec2(74.0, 24.0),
         DockEdge::Top if lyrics.is_some() => vec2(340.0, 34.0),
         DockEdge::Top | DockEdge::Bottom if has_timer => vec2(158.0, 32.0),
+        DockEdge::Top | DockEdge::Bottom
+            if store.state().settings.local_ai_usage && store.state().settings.capsule_ai_usage =>
+        {
+            vec2(210.0, 32.0)
+        }
         DockEdge::Top | DockEdge::Bottom => vec2(128.0, 32.0),
         DockEdge::Left | DockEdge::Right if dock.minimal => vec2(22.0, 68.0),
         DockEdge::Left | DockEdge::Right => vec2(38.0, 104.0),
     };
-    size * scale
+    let extra = if dock.companion && !dock.minimal {
+        if dock.edge.is_horizontal() {
+            vec2(24.0, 0.0)
+        } else {
+            vec2(0.0, 24.0)
+        }
+    } else {
+        Vec2::ZERO
+    };
+    let metrics = if store.state().settings.capsule_device_metrics
+        && dock.edge.is_horizontal()
+        && !dock.minimal
+    {
+        vec2(194.0, 0.0)
+    } else {
+        Vec2::ZERO
+    };
+    (size + extra + metrics) * scale
+}
+
+pub(crate) fn compact_with_weather(
+    base: Vec2,
+    dock: &DockSettings,
+    available: bool,
+    account: bool,
+) -> Vec2 {
+    if dock.edge.is_horizontal() && !dock.minimal {
+        base + vec2(
+            (if available { 46.0 } else { 0.0 } + if account { 100.0 } else { 0.0 })
+                * f32::from(dock.scale)
+                / 100.,
+            0.,
+        )
+    } else {
+        base
+    }
 }
 
 pub(crate) fn avoidance_size(dock: &DockSettings) -> Vec2 {
@@ -102,7 +145,24 @@ pub(crate) fn draw(
         };
     }
     let ctx = root.ctx().clone();
-    root.set_style(ctx.style_of(egui::Theme::Dark));
+    let dock = &store.state().settings.dock;
+    let light = matches!(dock.skin, CapsuleSkin::Cream | CapsuleSkin::GlassLight);
+    root.set_style(ctx.style_of(if light {
+        egui::Theme::Light
+    } else {
+        egui::Theme::Dark
+    }));
+    #[cfg(windows)]
+    let cover = match media.status() {
+        crate::music::Status::Ready(track) if dock.skin == CapsuleSkin::Cloud => {
+            track.artwork.as_deref().and_then(skin::cover_color)
+        }
+        _ => None,
+    };
+    #[cfg(not(windows))]
+    let cover = None;
+    let tone = Palette::for_skin(dock.skin, cover);
+    tone.apply(root);
     let progress = ctx.animate_bool_with_time_and_easing(
         Id::new("capsule-shape"),
         options.expanded && !options.avoiding,
@@ -136,27 +196,42 @@ pub(crate) fn draw(
             egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "展开 NotchCalendar")
         });
         let color = if strip.hovered() || strip.has_focus() {
-            SIGNAL
+            tone.signal
         } else {
-            BORDER
+            tone.border
         };
         root.painter().rect_filled(rect, radius, color);
         frame.action = strip.clicked().then_some(ShellAction::Expand);
         return frame;
     }
 
-    let fill = if store.state().settings.dock.translucent {
-        Color32::from_rgba_unmultiplied(SURFACE.r(), SURFACE.g(), SURFACE.b(), 224)
+    let corners = skin::corners(radius, dock.shape, dock.edge);
+    let alpha = if dock.skin.glass() {
+        211
+    } else if dock.translucent {
+        224
     } else {
-        SURFACE
+        255
     };
+    let fill = Color32::from_rgba_unmultiplied(
+        tone.surface.r(),
+        tone.surface.g(),
+        tone.surface.b(),
+        alpha,
+    );
     root.painter().rect(
         rect,
-        radius,
+        corners,
         fill,
-        Stroke::new(0.6_f32, Color32::from_gray(26)),
+        Stroke::new(0.6_f32, tone.border),
         StrokeKind::Inside,
     );
+    if dock.skin == CapsuleSkin::Cloud {
+        let pointer = (!options.reduce_motion)
+            .then(|| ctx.pointer_hover_pos())
+            .flatten();
+        skin::cloud_glow(root.painter(), rect, corners, pointer, tone.signal);
+    }
     if options.expanded && progress > 0.68 {
         let content = rect.shrink(14.0 * options.scale);
         if content.is_positive() {
@@ -175,7 +250,151 @@ pub(crate) fn draw(
             });
         }
     } else if !options.expanded && progress <= 0.06 {
-        frame.action = compact_content(root, rect, radius, store, &options);
+        #[cfg(windows)]
+        let playing = matches!(media.status(),crate::music::Status::Ready(track) if track.state==crate::music::PlaybackState::Playing);
+        #[cfg(not(windows))]
+        let playing = false;
+        let mut clock_rect = rect;
+        let show_metrics = store.state().settings.capsule_device_metrics
+            && options.dock.is_horizontal()
+            && !options.minimal;
+        if show_metrics {
+            clock_rect.max.x -= 194.0 * options.scale;
+        }
+        let metrics_start = clock_rect.max.x;
+        let weather = state
+            .weather_caption
+            .as_ref()
+            .filter(|_| options.dock.is_horizontal() && !options.minimal);
+        if weather.is_some() {
+            clock_rect.max.x -= 46. * options.scale;
+        }
+        let weather_start = clock_rect.right();
+        let badge = (state.alert_count > 0 && !options.minimal).then(|| {
+            let mut badge = clock_rect;
+            if options.dock.is_horizontal() {
+                clock_rect.max.x -= 18.0 * options.scale;
+                badge.min.x = clock_rect.right();
+            } else {
+                clock_rect.min.y += 17.0 * options.scale;
+                badge.max.y = clock_rect.top();
+            }
+            badge
+        });
+        if let Some(message) = &state.system_change {
+            let response = root.interact(
+                clock_rect,
+                Id::new("capsule-system-change"),
+                egui::Sense::click(),
+            );
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, message));
+            if options.dock.is_horizontal() {
+                let inset = 6.0 * options.scale;
+                truncated_text(
+                    root,
+                    message,
+                    pos2(clock_rect.left() + inset, clock_rect.center().y),
+                    (clock_rect.width() - 2. * inset).max(1.),
+                    12. * options.scale,
+                    tone.ink,
+                );
+            } else {
+                let summary = message.split('·').next().unwrap_or(message);
+                let text = summary
+                    .trim()
+                    .chars()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                root.painter().with_clip_rect(clock_rect).text(
+                    clock_rect.center(),
+                    Align2::CENTER_CENTER,
+                    text,
+                    FontId::proportional(10. * options.scale),
+                    tone.ink,
+                );
+            }
+            if response.clicked() {
+                frame.action = Some(ShellAction::Expand);
+            }
+            response.on_hover_text(message);
+        } else {
+            frame.action = compact_content(
+                root,
+                clock_rect,
+                corners,
+                store,
+                &options,
+                state.ai_caption.as_deref(),
+                playing,
+            );
+        }
+        if let Some(text) = weather {
+            let strip = Rect::from_min_max(
+                pos2(weather_start, rect.top()),
+                pos2(metrics_start, rect.bottom()),
+            );
+            let response = root.interact(strip, Id::new("compact-weather"), egui::Sense::click());
+            root.painter().with_clip_rect(strip).text(
+                strip.center(),
+                Align2::CENTER_CENTER,
+                text,
+                FontId::proportional(12. * options.scale),
+                tone.ink,
+            );
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("天气 {text}"))
+            });
+            #[cfg(windows)]
+            if response.clicked() {
+                frame.action = Some(ShellAction::OpenWorkbench(Page::Weather));
+            }
+        }
+        if show_metrics {
+            let strip = Rect::from_min_max(pos2(metrics_start, rect.top()), rect.max);
+            let response = root.interact(
+                strip,
+                Id::new("capsule-device-metrics"),
+                egui::Sense::click(),
+            );
+            let text = if state.device_caption.is_empty() {
+                "读取设备状态…"
+            } else {
+                state.device_caption.as_str()
+            };
+            root.painter().with_clip_rect(strip).text(
+                strip.center(),
+                Align2::CENTER_CENTER,
+                text,
+                FontId::proportional(11.0 * options.scale),
+                tone.ink,
+            );
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    true,
+                    format!("系统性能，{text}"),
+                )
+            });
+            #[cfg(windows)]
+            if response.clicked() {
+                frame.action = Some(ShellAction::OpenWorkbench(Page::Performance));
+            }
+        }
+        if let Some(badge) = badge {
+            let scale = options.scale;
+            let center = badge.center();
+            let alert = root.interact(badge, Id::new("capsule-app-alert"), egui::Sense::click());
+            let label = format!("有 {} 项应用提醒", state.alert_count);
+            alert.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+            root.painter()
+                .circle_filled(center, 4.0 * scale, Color32::from_rgb(244, 105, 108));
+            if alert.clicked() {
+                frame.action = Some(ShellAction::OpenWorkbench(Page::Notifications));
+            }
+            alert.on_hover_text(label);
+        }
     }
     frame
 }
@@ -217,10 +436,13 @@ fn shape_rect(available: Rect, options: &CapsuleOptions<'_>, progress: f32) -> R
 fn compact_content(
     ui: &mut Ui,
     rect: Rect,
-    radius: u8,
+    radius: egui::CornerRadius,
     store: &Store,
     options: &CapsuleOptions<'_>,
+    ai_caption: Option<&str>,
+    playing: bool,
 ) -> Option<ShellAction> {
+    let tone = Palette::from_ui(ui);
     let response = ui.interact(rect, Id::new("capsule-compact"), egui::Sense::click());
     let now = Local::now();
     let time = clock(&now, options.clock_24h);
@@ -243,12 +465,29 @@ fn compact_content(
         ui.painter().rect_stroke(
             rect.shrink(1.0),
             radius,
-            Stroke::new(1.2_f32, SIGNAL),
+            Stroke::new(1.2_f32, tone.signal),
             StrokeKind::Inside,
         );
     }
     let s = options.scale;
     let painter = ui.painter().with_clip_rect(rect);
+    let mut rect = rect;
+    if store.state().settings.dock.companion && !options.minimal {
+        let center = if options.dock.is_horizontal() {
+            let center = pos2(rect.left() + 16.0 * s, rect.center().y);
+            rect.min.x += 24.0 * s;
+            center
+        } else {
+            let center = pos2(rect.center().x, rect.bottom() - 15.0 * s);
+            rect.max.y -= 24.0 * s;
+            center
+        };
+        let drinking = store.state().notifications.iter().rev().take(6).any(|n| {
+            (0..60_000).contains(&(now.timestamp_millis() - n.at)) && n.title.contains("饮水")
+        });
+        companion::draw(ui, center, s, playing, drinking, options.reduce_motion);
+    }
+
     if options.minimal {
         let size = if options.dock.is_horizontal() {
             vec2(20.0, 3.0)
@@ -259,9 +498,9 @@ fn compact_content(
             Rect::from_center_size(rect.center(), size * s),
             2,
             if highlighted || running {
-                SIGNAL
+                tone.signal
             } else {
-                CAPTION
+                tone.caption
             },
         );
     } else if options.dock.is_horizontal() && !running && options.lyrics.is_none() {
@@ -270,21 +509,23 @@ fn compact_content(
         painter.text(
             pos2(rect.left() + inset, y),
             Align2::LEFT_CENTER,
-            now.format("%-m/%-d").to_string(),
+            ai_caption
+                .map(str::to_owned)
+                .unwrap_or_else(|| now.format("%-m/%-d").to_string()),
             FontId::proportional(12.0 * s),
-            CAPTION,
+            tone.caption,
         );
         painter.text(
             pos2(rect.right() - inset, y),
             Align2::RIGHT_CENTER,
             time,
             FontId::monospace(13.0 * s),
-            INK,
+            tone.ink,
         );
     } else if options.dock.is_horizontal() {
         let x = rect.left() + 17.0 * s;
         let y = rect.center().y;
-        clock_face(&painter, pos2(x, y), &now, 7.0 * s);
+        clock_face(&painter, pos2(x, y), &now, 7.0 * s, tone.signal);
         let timer_text;
         let caption = if let Some(line) = options.lyrics.filter(|line| !line.trim().is_empty()) {
             Some(line)
@@ -299,7 +540,7 @@ fn compact_content(
             Align2::LEFT_CENTER,
             time,
             FontId::monospace(14.0 * s),
-            INK,
+            tone.ink,
         );
         if let Some(caption) = caption {
             let left = time_rect.right() + 12.0 * s;
@@ -310,9 +551,9 @@ fn compact_content(
                         pos2(left - 6.0 * s, y - 6.0 * s),
                         pos2(left - 6.0 * s, y + 6.0 * s),
                     ],
-                    Stroke::new(1.0_f32, BORDER),
+                    Stroke::new(1.0_f32, tone.border),
                 );
-                truncated_text(ui, caption, pos2(left, y), width, 12.0 * s, CAPTION);
+                truncated_text(ui, caption, pos2(left, y), width, 12.0 * s, tone.caption);
             }
         }
     } else {
@@ -330,10 +571,10 @@ fn compact_content(
             };
             (format!("{hour:02}"), format!("{:02}", now.minute()))
         };
-        clock_face(&painter, pos2(x, y - 33.0 * s), &now, 5.5 * s);
+        clock_face(&painter, pos2(x, y - 33.0 * s), &now, 5.5 * s, tone.signal);
         for (dy, text, color, size) in [
-            (-12.0, upper.as_str(), INK, 15.0),
-            (8.0, lower.as_str(), INK, 15.0),
+            (-12.0, upper.as_str(), tone.ink, 15.0),
+            (8.0, lower.as_str(), tone.ink, 15.0),
             (
                 28.0,
                 if running {
@@ -345,7 +586,7 @@ fn compact_content(
                 } else {
                     "AM"
                 },
-                CAPTION,
+                tone.caption,
                 9.0,
             ),
         ] {
@@ -378,10 +619,10 @@ fn compact_content(
         };
         let elapsed = focus_elapsed(timer, now.timestamp_millis());
         let weight = 1.5 * s;
-        painter.line_segment([start, end], Stroke::new(weight, BORDER));
+        painter.line_segment([start, end], Stroke::new(weight, tone.border));
         painter.line_segment(
             [start, start.lerp(end, elapsed)],
-            Stroke::new(weight, SIGNAL),
+            Stroke::new(weight, tone.signal),
         );
         ui.ctx().request_repaint_after(Duration::from_secs(1));
     }
@@ -413,8 +654,14 @@ fn truncated_text(
     );
 }
 
-fn clock_face(painter: &egui::Painter, center: Pos2, now: &DateTime<Local>, radius: f32) {
-    let stroke = Stroke::new((radius * 0.16).max(1.0), SIGNAL);
+fn clock_face(
+    painter: &egui::Painter,
+    center: Pos2,
+    now: &DateTime<Local>,
+    radius: f32,
+    signal: Color32,
+) {
+    let stroke = Stroke::new((radius * 0.16).max(1.0), signal);
     painter.circle_stroke(center, radius, stroke);
     let minutes = now.minute() as f32;
     for (turns, length) in [
@@ -442,15 +689,6 @@ fn scale_style(ui: &mut Ui, scale: f32) {
     style.spacing.item_spacing = vec2(6.0, 6.0) * scale;
     style.spacing.interact_size = vec2(32.0, 26.0) * scale;
     style.spacing.button_padding = vec2(8.0, 3.0) * scale;
-    style.visuals.override_text_color = Some(INK);
-    style.visuals.widgets.noninteractive.fg_stroke.color = CAPTION;
-    let widgets = &mut style.visuals.widgets;
-    widgets.inactive.weak_bg_fill = CARD;
-    widgets.hovered.weak_bg_fill = BORDER;
-    widgets.hovered.bg_stroke.color = SIGNAL;
-    widgets.active.bg_stroke.color = SIGNAL;
-    style.visuals.selection.bg_fill = SELECTED;
-    style.visuals.selection.stroke = Stroke::new(1.0_f32, SIGNAL);
     for font in style.text_styles.values_mut() {
         font.size *= scale;
     }
@@ -463,6 +701,7 @@ fn expanded_content(
     options: &CapsuleOptions<'_>,
     #[cfg(windows)] media: &mut crate::music::Media,
 ) -> Option<ShellAction> {
+    let tone = Palette::from_ui(ui);
     let s = options.scale;
     let now = Local::now();
     let date = now.date_naive();
@@ -493,8 +732,8 @@ fn expanded_content(
         ui.painter().rect(
             dock_rect,
             (17.0 * s) as u8,
-            CARD,
-            Stroke::new(0.8_f32, BORDER),
+            tone.card,
+            Stroke::new(0.8_f32, tone.border),
             StrokeKind::Inside,
         );
     }
@@ -523,18 +762,24 @@ fn expanded_content(
             ui.painter().rect_filled(
                 chip,
                 (14.0 * s) as u8,
-                if selected { SELECTED } else { BORDER },
+                if selected { tone.selected } else { tone.border },
             );
             if response.has_focus() {
                 ui.painter().rect_stroke(
                     chip,
                     (14.0 * s) as u8,
-                    Stroke::new(1.0_f32, INK),
+                    Stroke::new(1.0_f32, tone.ink),
                     StrokeKind::Inside,
                 );
             }
         }
-        super::navigation::draw_icon(ui, page, center, if selected { SIGNAL } else { CAPTION }, s);
+        super::navigation::draw_icon(
+            ui,
+            page,
+            center,
+            if selected { tone.signal } else { tone.caption },
+            s,
+        );
         if response.on_hover_text(page.title()).clicked() {
             state.active = Some(page);
         }
@@ -542,15 +787,15 @@ fn expanded_content(
     ui.horizontal(|ui| {
         if let Some(active) = state.active {
             Frame::new()
-                .fill(CARD)
+                .fill(tone.card)
                 .corner_radius(15)
                 .inner_margin(Margin::symmetric((8.0 * s) as i8, (3.0 * s) as i8))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let (icon, _) =
                             ui.allocate_exact_size(vec2(15.0, 17.0) * s, egui::Sense::hover());
-                        super::navigation::draw_icon(ui, active, icon.center(), SIGNAL, s);
-                        caption(ui, active.title(), 12.0 * s, INK, true);
+                        super::navigation::draw_icon(ui, active, icon.center(), tone.signal, s);
+                        caption(ui, active.title(), 12.0 * s, tone.ink, true);
                     });
                 });
         }
@@ -657,7 +902,7 @@ fn expanded_content(
     });
     ui.add_space(9.0 * s);
     if let Some(error) = &state.error {
-        caption(ui, error, 12.0 * s, Color32::from_rgb(255, 168, 163), false);
+        caption(ui, error, 12.0 * s, ui.visuals().error_fg_color, false);
     }
 
     if state.library_open {
@@ -710,11 +955,11 @@ fn expanded_content(
                         ui,
                         selected.format("%Y年%-m月").to_string(),
                         12.0 * s,
-                        CAPTION,
+                        tone.caption,
                         false,
                     );
                     if let Some(lunar) = calendar::lunar_caption(selected) {
-                        caption(ui, lunar, 12.0 * s, CAPTION, false);
+                        caption(ui, lunar, 12.0 * s, tone.caption, false);
                     }
                     ui.add_space(3.0 * s);
                     surface(ui, s, |ui| {
@@ -746,7 +991,7 @@ fn expanded_content(
                         ui,
                         format!("{}   {lunar}", date.format("%Y年%-m月")),
                         12.0 * s,
-                        CAPTION,
+                        tone.caption,
                         false,
                     );
                 }
@@ -788,7 +1033,11 @@ fn expanded_content(
                 Page::Focus => {
                     let timer = &workspace.focus;
                     let seconds = timer.seconds_left(now.timestamp_millis());
-                    let tint = focus::session_color(true, timer.kind, timer.duration_minutes);
+                    let tint = focus::session_color(
+                        ui.visuals().dark_mode,
+                        timer.kind,
+                        timer.duration_minutes,
+                    );
                     ui.horizontal(|ui| {
                         focus::dial(
                             ui,
@@ -847,10 +1096,10 @@ fn expanded_content(
                 Page::Notes => surface(ui, s, |ui| {
                     let text = workspace.notes.trim();
                     if text.is_empty() {
-                        caption(ui, "暂无便笺", 13.0 * s, CAPTION, false);
+                        caption(ui, "暂无便笺", 13.0 * s, tone.caption, false);
                     } else {
                         let preview: String = text.chars().take(650).collect();
-                        ui.label(RichText::new(preview).color(INK).size(14.0 * s));
+                        ui.label(RichText::new(preview).color(tone.ink).size(14.0 * s));
                     }
                 }),
                 _ => {}
@@ -866,30 +1115,31 @@ fn toolbar_button(
     scale: f32,
     draw_icon: impl FnOnce(&egui::Painter, Pos2, Stroke),
 ) -> bool {
+    let tone = Palette::from_ui(ui);
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(28.0 * scale), egui::Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     let p = ui.painter();
     let hovered = response.hovered() || response.has_focus();
     let fill = if selected {
-        SELECTED
+        tone.selected
     } else if hovered {
-        BORDER
+        tone.border
     } else {
-        CARD
+        tone.card
     };
     let ink = if selected {
-        SIGNAL
+        tone.signal
     } else if hovered {
-        INK
+        tone.ink
     } else {
-        CAPTION
+        tone.caption
     };
     p.circle_filled(rect.center(), rect.width() / 2.0, fill);
     if response.has_focus() {
         p.circle_stroke(
             rect.center(),
             rect.width() / 2.0 - scale,
-            Stroke::new(scale, SIGNAL),
+            Stroke::new(scale, tone.signal),
         );
     }
     draw_icon(p, rect.center(), Stroke::new(1.5 * scale, ink));
@@ -897,11 +1147,13 @@ fn toolbar_button(
 }
 
 fn page_heading(ui: &mut Ui, text: impl Into<String>, s: f32) {
-    caption(ui, text, 22.0 * s, INK, true);
+    let tone = Palette::from_ui(ui);
+    caption(ui, text, 22.0 * s, tone.ink, true);
 }
 
 fn section_heading(ui: &mut Ui, text: impl Into<String>, s: f32) {
-    caption(ui, text, 12.0 * s, SIGNAL, true);
+    let tone = Palette::from_ui(ui);
+    caption(ui, text, 12.0 * s, tone.signal, true);
 }
 
 fn caption(ui: &mut Ui, text: impl Into<String>, size: f32, color: Color32, bold: bool) {
@@ -913,10 +1165,11 @@ fn caption(ui: &mut Ui, text: impl Into<String>, size: f32, color: Color32, bold
 }
 
 fn surface(ui: &mut Ui, s: f32, contents: impl FnOnce(&mut Ui)) {
+    let tone = Palette::from_ui(ui);
     Frame::new()
-        .fill(CARD)
+        .fill(tone.card)
         .corner_radius((7.0 * s).round() as u8)
-        .stroke(Stroke::new(1.0_f32, BORDER))
+        .stroke(Stroke::new(1.0_f32, tone.border))
         .inner_margin(Margin::same((10.0 * s).round() as i8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -944,12 +1197,12 @@ fn day_overview(
     s: f32,
     action: &mut Option<ShellAction>,
 ) {
+    let tone = Palette::from_ui(ui);
     let selected_date = now.date_naive();
     let timestamp = now.timestamp_millis();
     let focus = &workspace.focus;
-    let next_event = workspace
-        .events
-        .iter()
+    let next_event = crate::workspace::event_identity::visible(&workspace.events)
+        .into_iter()
         .filter(|event| {
             !event.all_day && event.end_at > timestamp && calendar::on_date(event, selected_date)
         })
@@ -972,7 +1225,7 @@ fn day_overview(
                     ui,
                     focus::digits(focus.seconds_left(timestamp)),
                     24.0 * s,
-                    INK,
+                    tone.ink,
                     true,
                 );
                 if !focus.label.is_empty() {
@@ -1006,7 +1259,7 @@ fn day_overview(
                     egui::Label::new(
                         RichText::new(&event.title)
                             .size(17.0 * s)
-                            .color(INK)
+                            .color(tone.ink)
                             .strong(),
                     )
                     .truncate(),
@@ -1020,7 +1273,7 @@ fn day_overview(
                     }
                     _ => calendar::event_time(event),
                 };
-                caption(ui, time, 12.0 * s, CAPTION, false);
+                caption(ui, time, 12.0 * s, tone.caption, false);
                 if ui.button("打开日历").clicked() {
                     open = Some(ShellAction::OpenCalendar(selected_date));
                 }
@@ -1057,8 +1310,9 @@ fn day_overview(
 }
 
 fn task_rows(ui: &mut Ui, tasks: &[&Task], limit: usize, s: f32, action: &mut Option<ShellAction>) {
+    let tone = Palette::from_ui(ui);
     if tasks.is_empty() {
-        caption(ui, "暂无待处理待办", 13.0 * s, CAPTION, false);
+        caption(ui, "暂无待处理待办", 13.0 * s, tone.caption, false);
     }
     for task in tasks.iter().take(limit) {
         ui.push_id(task.id, |ui| {
@@ -1075,9 +1329,9 @@ fn task_rows(ui: &mut Ui, tasks: &[&Task], limit: usize, s: f32, action: &mut Op
                     Stroke::new(
                         1.2_f32,
                         if response.hovered() || response.has_focus() {
-                            SIGNAL
+                            tone.signal
                         } else {
-                            CAPTION
+                            tone.caption
                         },
                     ),
                 );
@@ -1085,7 +1339,7 @@ fn task_rows(ui: &mut Ui, tasks: &[&Task], limit: usize, s: f32, action: &mut Op
                     *action = Some(ShellAction::CompleteTask(task.id));
                 }
                 ui.add(
-                    egui::Label::new(RichText::new(&task.title).size(13.0 * s).color(INK))
+                    egui::Label::new(RichText::new(&task.title).size(13.0 * s).color(tone.ink))
                         .truncate(),
                 );
             });
@@ -1093,7 +1347,13 @@ fn task_rows(ui: &mut Ui, tasks: &[&Task], limit: usize, s: f32, action: &mut Op
     }
     let remaining = tasks.len().saturating_sub(limit);
     if remaining > 0 && limit >= 4 {
-        caption(ui, format!("还有 {remaining} 项"), 11.0 * s, CAPTION, false);
+        caption(
+            ui,
+            format!("还有 {remaining} 项"),
+            11.0 * s,
+            tone.caption,
+            false,
+        );
     }
 }
 
@@ -1105,14 +1365,14 @@ fn schedule(
     limit: usize,
     s: f32,
 ) {
-    let mut events: Vec<_> = workspace
-        .events
-        .iter()
+    let tone = Palette::from_ui(ui);
+    let mut events: Vec<_> = crate::workspace::event_identity::visible(&workspace.events)
+        .into_iter()
         .filter(|event| calendar::on_date(event, date))
         .collect();
     events.sort_by_key(|event| (!event.all_day, event.start_at));
     if events.is_empty() {
-        caption(ui, "当天没有日程", 13.0 * s, CAPTION, false);
+        caption(ui, "当天没有日程", 13.0 * s, tone.caption, false);
     }
     for event in events.into_iter().take(limit) {
         let time = if event.all_day {
@@ -1124,10 +1384,11 @@ fn schedule(
         ui.horizontal(|ui| {
             ui.add_sized(
                 [if clock_24h { 44.0 * s } else { 64.0 * s }, 18.0 * s],
-                egui::Label::new(RichText::new(time).size(11.0 * s).color(CAPTION)).truncate(),
+                egui::Label::new(RichText::new(time).size(11.0 * s).color(tone.caption)).truncate(),
             );
             ui.add(
-                egui::Label::new(RichText::new(&event.title).size(13.0 * s).color(INK)).truncate(),
+                egui::Label::new(RichText::new(&event.title).size(13.0 * s).color(tone.ink))
+                    .truncate(),
             );
         });
     }
@@ -1201,6 +1462,93 @@ mod tests {
                 assert!(matches!(action, Some(ShellAction::ToggleFocus)));
             }
         }
+    }
+
+    #[test]
+    fn alert_badge_takes_click_without_expanding_on_hover() {
+        let ctx = egui::Context::default();
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(directory.path().into()).unwrap();
+        store
+            .update(|workspace| {
+                workspace.settings.open_on_hover = true;
+                workspace.settings.capsule_device_metrics = true;
+                workspace.settings.dock.companion = true;
+                Ok(())
+            })
+            .unwrap();
+        let dock = &store.state().settings.dock;
+        let size = compact_with_weather(compact_size(&store, dock, None), dock, true, false);
+        let screen = Rect::from_min_size(Pos2::ZERO, size);
+        let mut state = CapsuleState {
+            alert_count: 2,
+            weather_caption: Some("22°".into()),
+            ..Default::default()
+        };
+        #[cfg(windows)]
+        let mut media = crate::music::Media::new(ctx.clone());
+        let mut render = |events| {
+            let mut action = None;
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    action = draw(
+                        ui,
+                        &store,
+                        &mut state,
+                        CapsuleOptions {
+                            dock: dock.edge,
+                            expanded: false,
+                            pinned: false,
+                            avoiding: false,
+                            hidden: false,
+                            reduce_motion: true,
+                            collapsed_size: size,
+                            collapsed_center: None,
+                            scale: dock.factor(),
+                            lyrics: None,
+                            clock_24h: true,
+                            minimal: false,
+                            pages: &[Page::Today],
+                        },
+                        #[cfg(windows)]
+                        &mut media,
+                    )
+                    .action;
+                },
+            );
+            action
+        };
+        render(vec![]);
+        let badge = ctx
+            .read_response(Id::new("capsule-app-alert"))
+            .unwrap()
+            .rect;
+        for name in [
+            "compact-weather",
+            "capsule-device-metrics",
+            "capsule-compact",
+        ] {
+            let other = ctx.read_response(Id::new(name)).unwrap().rect;
+            assert!(!badge.intersect(other).is_positive());
+        }
+        let pos = badge.center();
+        assert!(render(vec![egui::Event::PointerMoved(pos)]).is_none());
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        assert!(render(vec![button(true)]).is_none());
+        assert!(matches!(
+            render(vec![button(false)]),
+            Some(ShellAction::OpenWorkbench(Page::Notifications))
+        ));
     }
 
     #[test]

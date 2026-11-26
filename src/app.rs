@@ -22,6 +22,8 @@ const AUTO_FOLD_TIME: Duration = Duration::from_millis(440);
 const AVOIDANCE_INTERVAL: Duration = Duration::from_millis(250);
 const ICON: &[u8] = include_bytes!("../assets/icon.png");
 
+pub(crate) static ACTIVE_RENDERER: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
 pub fn run() -> Result<(), String> {
     let Some(_instance) = Instance::acquire().map_err(|error| error.to_string())? else {
         return Ok(());
@@ -54,43 +56,83 @@ pub fn run() -> Result<(), String> {
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
-    eframe::run_native(
-        TITLE,
-        options,
-        Box::new(move |creation| {
-            ui::configure_style(&creation.egui_ctx);
-            let mut sources = FeatureSources::new(creation.egui_ctx.clone());
-            sources.media.set_lyrics_directory(profile.join("lyrics"));
-            Ok(Box::new(Desktop {
-                store,
-                legacy,
-                icon,
-                shell: None,
-                expanded: false,
-                pinned: false,
-                visible: false,
-                fold_at: None,
-                pointer_left_at: None,
-                suppress_hover: false,
-                focus_capsule: false,
-                workspace_open: false,
-                focus_workspace: false,
-                workbench: Workbench::default(),
-                desktop_todo: desktop_todo::TodoWindow::default(),
-                sources,
-                capsule_state: CapsuleState::default(),
-                pixel_shift: PixelShift::default(),
-                occlusion: Occlusion::Clear,
-                next_occlusion_check: None,
-                override_avoidance: false,
-                tick_retry_at: None,
-                focus_notice_pending: false,
-                launch_at_login: windows::launch_at_login().map_err(|error| error.to_string()),
-                shell_failed: false,
-            }))
-        }),
-    )
-    .map_err(|error| format!("无法启动 {TITLE}（{error}）"))
+    let mut store = Some(store);
+    let mut gl_error = None;
+    for renderer in [eframe::Renderer::Glow, eframe::Renderer::Wgpu] {
+        let mut options = options.clone();
+        options.renderer = renderer;
+        if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup
+        {
+            setup.instance_descriptor.backends = wgpu::Backends::DX12;
+            setup
+                .instance_descriptor
+                .backend_options
+                .dx12
+                .shader_compiler = wgpu::Dx12Compiler::Fxc;
+        }
+        let result = eframe::run_native(
+            TITLE,
+            options,
+            Box::new(|creation| {
+                let store = store.take().expect("renderer initializes app once");
+                ACTIVE_RENDERER.get_or_init(|| match renderer {
+                    eframe::Renderer::Glow => "OpenGL",
+                    eframe::Renderer::Wgpu => "Direct3D 12",
+                });
+                ui::configure_style(&creation.egui_ctx);
+                let mut sources = FeatureSources::new(creation.egui_ctx.clone());
+                sources.media.set_lyrics_directory(profile.join("lyrics"));
+                Ok(Box::new(Desktop {
+                    store,
+                    legacy: legacy.clone(),
+                    icon: icon.clone(),
+                    shell: None,
+                    expanded: false,
+                    pinned: false,
+                    visible: false,
+                    fold_at: None,
+                    pointer_left_at: None,
+                    suppress_hover: false,
+                    focus_capsule: false,
+                    workspace_open: false,
+                    focus_workspace: false,
+                    workbench: Workbench::default(),
+                    desktop_todo: desktop_todo::TodoWindow::default(),
+                    sources,
+                    capsule_state: CapsuleState::default(),
+                    capsule_metrics: Default::default(),
+                    status_changes: Default::default(),
+                    pixel_shift: PixelShift::default(),
+                    occlusion: Occlusion::Clear,
+                    next_occlusion_check: None,
+                    override_avoidance: false,
+                    tick_retry_at: None,
+                    focus_notice_pending: false,
+                    launch_at_login: windows::launch_at_login().map_err(|error| error.to_string()),
+                    shell_failed: false,
+                }))
+            }),
+        );
+        match result {
+            Ok(()) => return Ok(()),
+            Err(
+                error @ (eframe::Error::Glutin(_)
+                | eframe::Error::NoGlutinConfigs(..)
+                | eframe::Error::OpenGL(_)),
+            ) if store.is_some() && renderer == eframe::Renderer::Glow => {
+                gl_error = Some(error.to_string());
+            }
+            Err(error) => {
+                return Err(match gl_error {
+                    Some(first) => {
+                        format!("无法启动 {TITLE}。OpenGL：{first}；Direct3D 12：{error}")
+                    }
+                    None => format!("无法启动 {TITLE}（{error}）"),
+                });
+            }
+        }
+    }
+    unreachable!("the second renderer always returns")
 }
 
 struct Desktop {
@@ -111,6 +153,8 @@ struct Desktop {
     desktop_todo: desktop_todo::TodoWindow,
     sources: FeatureSources,
     capsule_state: CapsuleState,
+    capsule_metrics: windows::system_status::CapsuleMetrics,
+    status_changes: windows::status_changes::Changes,
     pixel_shift: PixelShift,
     occlusion: Occlusion,
     next_occlusion_check: Option<Instant>,
@@ -262,6 +306,9 @@ impl Desktop {
             },
         );
         self.workspace_open = !close;
+        if self.workbench.open_alert_window.is_some() || self.workbench.open_wechat {
+            ctx.request_repaint_of(ViewportId::ROOT);
+        }
         if self.workbench.take_desktop_todo_request() {
             self.open_desktop_todo(ctx);
         }
@@ -307,6 +354,25 @@ impl Desktop {
         };
         let (active, notifications) = shell
             .poll_taskbar_notifications(self.store.state().settings.taskbar_notifications, cleared);
+        if let Some(id) = self.workbench.open_alert_window.take()
+            && let Err(message) = shell.activate_alert_window(id)
+        {
+            self.workbench.set_notice(Err(message.to_owned()));
+        }
+        if std::mem::take(&mut self.workbench.open_wechat) {
+            let result = shell
+                .open_wechat()
+                .map(|_| "已请求打开微信；多账号请在微信中选择。".to_owned())
+                .map_err(str::to_owned);
+            self.workbench.set_notice(result);
+            ctx.request_repaint_of(ViewportId::from_hash_of(WORKBENCH_VIEWPORT_KEY));
+        }
+        let rows = shell.pending_windows();
+        self.capsule_state.alert_count = rows.len() + self.workbench.qq_listener.count();
+        let windows_changed = rows != self.workbench.alert_windows;
+        if windows_changed {
+            self.workbench.alert_windows = rows;
+        }
         let status_changed = self.workbench.update_taskbar_status(active);
         let has_notifications = !notifications.is_empty();
         if has_notifications
@@ -314,7 +380,7 @@ impl Desktop {
         {
             self.workbench.set_notice(Err(error));
         }
-        if status_changed || has_notifications {
+        if status_changed || has_notifications || windows_changed {
             ctx.request_repaint_of(ViewportId::from_hash_of(WORKBENCH_VIEWPORT_KEY));
         }
     }
@@ -351,7 +417,14 @@ impl Desktop {
         } else {
             None
         };
-        let compact = capsule::compact_size(&self.store, dock, lyrics.as_deref());
+        let compact = capsule::compact_with_weather(
+            capsule::compact_size(&self.store, dock, lyrics.as_deref()),
+            dock,
+            self.capsule_state.weather_caption.is_some(),
+            self.capsule_state.account_pinned
+                && !(self.store.state().settings.local_ai_usage
+                    && self.store.state().settings.capsule_ai_usage),
+        );
         let shell = self.shell.as_mut().expect("initialized Windows shell");
         let idle = !moving
             && !self.expanded
@@ -422,6 +495,10 @@ impl Desktop {
                 ctx.request_repaint_of(ViewportId::from_hash_of(WORKBENCH_VIEWPORT_KEY));
             }
         }
+        shell.set_appearance(
+            dock.skin,
+            (dock.shape == crate::dock::CapsuleShape::Notch && !avoiding).then_some(dock.edge),
+        );
         let layout = shell.layout(LayoutRequest {
             size,
             resting: resting.into(),
@@ -584,6 +661,9 @@ impl eframe::App for Desktop {
                 }
             }
         }
+        if self.workbench.qq_listener.poll(ctx) {
+            ctx.request_repaint_of(ViewportId::from_hash_of(WORKBENCH_VIEWPORT_KEY));
+        }
         self.poll_taskbar_notifications(ctx, false);
         for action in self.shell.as_mut().unwrap().take_actions() {
             match action {
@@ -616,7 +696,15 @@ impl eframe::App for Desktop {
                                             .map(|_| ""))
                                     })
                                     .flatten();
-                            capsule::compact_size(&self.store, &dock, lyrics).into()
+                            capsule::compact_with_weather(
+                                capsule::compact_size(&self.store, &dock, lyrics),
+                                &dock,
+                                self.capsule_state.weather_caption.is_some(),
+                                self.capsule_state.account_pinned
+                                    && !(self.store.state().settings.local_ai_usage
+                                        && self.store.state().settings.capsule_ai_usage),
+                            )
+                            .into()
                         });
                     if let Some((device, edge, offset)) = placement {
                         let result = self.store.update(|workspace| {
@@ -632,14 +720,16 @@ impl eframe::App for Desktop {
                 }
             }
         }
-        self.workbench.poll_clipboard(ctx);
+        self.workbench.poll_clipboard(ctx, self.store.directory());
         let dock = &self.store.state().settings.dock;
         self.sources.media.set_visible(
-            (self.expanded
-                && dock
-                    .pages
-                    .iter()
-                    .any(|entry| entry.enabled && entry.page == CapsulePage::Music))
+            ((dock.skin == crate::dock::CapsuleSkin::Cloud || (dock.companion && !dock.minimal))
+                && self.occlusion == Occlusion::Clear)
+                || (self.expanded
+                    && dock
+                        .pages
+                        .iter()
+                        .any(|entry| entry.enabled && entry.page == CapsulePage::Music))
                 || (dock.edge == DockEdge::Top
                     && dock.top_lyrics
                     && !dock.minimal
@@ -666,6 +756,40 @@ impl eframe::App for Desktop {
         let ctx = ui.ctx().clone();
         if self.expanded && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
             self.set_expanded(false, false);
+        }
+        self.workbench
+            .poll_resident_weather(&ctx, self.store.directory());
+        self.capsule_state.weather_caption = self.workbench.resident_weather();
+        let prefs = &self.store.state().settings;
+        self.capsule_state.system_change =
+            self.status_changes.poll(&ctx, prefs.capsule_system_changes);
+        if prefs.local_ai_usage && prefs.capsule_ai_usage {
+            self.workbench.ai_meter.poll(&ctx, true);
+            self.capsule_state.ai_caption = self.workbench.ai_meter.caption();
+        } else {
+            self.capsule_state.ai_caption = None;
+            if !prefs.local_ai_usage {
+                self.workbench.ai_meter.poll(&ctx, false);
+            }
+        }
+        if prefs.capsule_device_metrics
+            && prefs.dock.edge.is_horizontal()
+            && !prefs.dock.minimal
+            && !self.expanded
+            && self.occlusion == Occlusion::Clear
+        {
+            self.capsule_state.device_caption = self.capsule_metrics.poll(&ctx);
+        } else {
+            self.capsule_state.device_caption.clear();
+            self.capsule_metrics = Default::default();
+        }
+        let account = self
+            .workbench
+            .ai_meter
+            .account_caption(&ctx, self.store.directory());
+        self.capsule_state.account_pinned = account.is_some();
+        if account.is_some() {
+            self.capsule_state.ai_caption = account;
         }
         self.draw_capsule(ui);
         if self.workspace_open {

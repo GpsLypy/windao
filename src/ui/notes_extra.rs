@@ -129,7 +129,10 @@ impl ExtraNotes {
     fn meetings(&mut self, ui: &mut Ui, store: &mut Store) {
         subhead(ui, "会议笔记");
         let state = store.state();
-        let mut upcoming: Vec<_> = state.events.iter().filter(|event| !event.all_day).collect();
+        let mut upcoming: Vec<_> = crate::workspace::event_identity::visible(&state.events)
+            .into_iter()
+            .filter(|event| !event.all_day)
+            .collect();
         upcoming.sort_by_key(|event| event.start_at);
         let now = Utc::now().timestamp_millis();
         ui.menu_button("选择日程", |ui| {

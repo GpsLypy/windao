@@ -145,7 +145,13 @@ impl Workbench {
                 Section::About => card(ui, |ui| {
                     subhead(ui, "NotchCalendar");
                     ui.weak(concat!("版本 ", env!("CARGO_PKG_VERSION")));
-                    ui.hyperlink_to("查看新版本", "https://github.com/GpsLypy/windao/releases");
+                    #[cfg(windows)]
+                    self.updates
+                        .show(ui, store.directory(), windows, displays.len());
+                    ui.hyperlink_to(
+                        "发布记录与下载",
+                        "https://github.com/GpsLypy/windao/releases",
+                    );
                     super::quit_button(ui);
                 }),
             });

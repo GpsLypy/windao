@@ -47,10 +47,14 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::w;
 
-use crate::dock::{DockEdge, edge_from_pointer, place};
+use crate::dock::{CapsuleSkin, DockEdge, edge_from_pointer, place};
 
 mod avoidance;
+pub(crate) mod qq_notifications;
 mod taskbar_notifications;
+pub(crate) use taskbar_notifications::WindowRow;
+pub(crate) mod status_changes;
+pub(crate) mod system_status;
 use avoidance::Avoidance;
 pub use avoidance::{AvoidanceRules, Occlusion};
 
@@ -197,6 +201,7 @@ pub enum FileKind {
     Backup,
     Json,
     Markdown,
+    Zip,
     Lyrics,
     AllFiles,
 }
@@ -225,6 +230,7 @@ fn choose_files(
             w!("json"),
         ),
         FileKind::Json => (w!("JSON (*.json)\0*.json\0所有文件\0*.*\0"), w!("json")),
+        FileKind::Zip => (w!("ZIP (*.zip)\0*.zip\0"), w!("zip")),
         FileKind::Markdown => (w!("Markdown (*.md)\0*.md\0所有文件\0*.*\0"), w!("md")),
         FileKind::Lyrics => (w!("LRC (*.lrc)\0*.lrc\0所有文件\0*.*\0"), w!("lrc")),
         FileKind::AllFiles => (w!("所有文件\0*.*\0"), null()),
@@ -598,6 +604,8 @@ pub struct Shell {
     hotkey: bool,
     region: Option<Region>,
     applied_region: Option<Region>,
+    skin: Option<CapsuleSkin>,
+    flat_edge: Option<DockEdge>,
     host_size: Option<HostSize>,
     suppressed: bool,
     capture_exclusion_requested: bool,
@@ -621,6 +629,7 @@ struct Region {
     right: i32,
     bottom: i32,
     diameter: i32,
+    flat_edge: Option<DockEdge>,
 }
 
 impl Shell {
@@ -665,6 +674,8 @@ impl Shell {
             hotkey: register_hotkey(hwnd),
             region: None,
             applied_region: None,
+            skin: None,
+            flat_edge: None,
             host_size: None,
             suppressed: false,
             capture_exclusion_requested: false,
@@ -688,6 +699,25 @@ impl Shell {
     ) -> (bool, Vec<crate::workspace::TaskbarNotification>) {
         let mut notifications = self.events.taskbar_notifications.borrow_mut();
         notifications.poll(self.hwnd, &self.events.ctx, enabled, cleared)
+    }
+
+    pub fn pending_windows(&self) -> Vec<WindowRow> {
+        self.events.taskbar_notifications.borrow().rows()
+    }
+
+    pub fn open_wechat(&self) -> Result<(), &'static str> {
+        let path = self.events.taskbar_notifications.borrow().wechat_path();
+        taskbar_notifications::open_wechat(path)
+    }
+
+    pub fn activate_alert_window(&self, id: u64) -> Result<(), &'static str> {
+        let target = self
+            .events
+            .taskbar_notifications
+            .borrow()
+            .target(id)
+            .ok_or("该窗口的提醒已结束。")?;
+        target.activate()
     }
 
     pub fn displays(&self) -> Vec<Display> {
@@ -941,6 +971,7 @@ impl Shell {
                 right: 0,
                 bottom: 0,
                 diameter: 0,
+                flat_edge: None,
             });
         } else if let Some(region) = self.region {
             self.apply_region(region);
@@ -1035,6 +1066,7 @@ impl Shell {
                     top,
                     right: left + width,
                     bottom: top + height,
+                    flat_edge: self.flat_edge,
                     diameter: rescale(previous.diameter).clamp(1, width.min(height)),
                 }
             }
@@ -1043,6 +1075,7 @@ impl Shell {
                 top: 0,
                 right: host.width,
                 bottom: host.height,
+                flat_edge: self.flat_edge,
                 diameter: ((radius * host.dpi as f32 / 48.0).round() as i32)
                     .clamp(1, host.width.min(host.height)),
             },
@@ -1072,6 +1105,7 @@ impl Shell {
             top,
             right,
             bottom,
+            flat_edge: self.flat_edge,
             diameter: diameter.clamp(1, span),
         };
         self.set_region(bounds);
@@ -1081,6 +1115,38 @@ impl Shell {
         self.region = Some(bounds);
         if !self.suppressed {
             self.apply_region(bounds);
+        }
+    }
+
+    pub fn set_appearance(&mut self, skin: CapsuleSkin, flat_edge: Option<DockEdge>) {
+        use windows_sys::Win32::Graphics::Dwm::{
+            DWMSBT_NONE, DWMSBT_TRANSIENTWINDOW, DWMWA_SYSTEMBACKDROP_TYPE,
+            DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute,
+        };
+        self.flat_edge = flat_edge;
+        if self.skin == Some(skin) {
+            return;
+        }
+        self.skin = Some(skin);
+        let material = if skin.glass() {
+            DWMSBT_TRANSIENTWINDOW
+        } else {
+            DWMSBT_NONE
+        };
+        let dark = i32::from(skin == CapsuleSkin::GlassDark);
+        // Windows 11 22H2+ supplies Acrylic. The renderer's translucent surface is the fallback.
+        unsafe {
+            for (attribute, value) in [
+                (DWMWA_USE_IMMERSIVE_DARK_MODE, dark),
+                (DWMWA_SYSTEMBACKDROP_TYPE, material),
+            ] {
+                DwmSetWindowAttribute(
+                    self.hwnd,
+                    attribute as u32,
+                    (&value as *const i32).cast(),
+                    size_of::<i32>() as u32,
+                );
+            }
         }
     }
 
@@ -1103,6 +1169,23 @@ impl Shell {
             };
             if region.is_null() {
                 return;
+            }
+            if let Some(edge) = bounds.flat_edge {
+                let (mut l, mut t, mut r, mut b) =
+                    (bounds.left, bounds.top, bounds.right, bounds.bottom);
+                let radius = (bounds.diameter + 1) / 2;
+                match edge {
+                    DockEdge::Top => b = t + radius,
+                    DockEdge::Bottom => t = b - radius,
+                    DockEdge::Left => r = l + radius,
+                    DockEdge::Right => l = r - radius,
+                }
+                let strip = CreateRectRgn(l, t, r, b);
+                if !strip.is_null() {
+                    use windows_sys::Win32::Graphics::Gdi::{CombineRgn, RGN_OR};
+                    CombineRgn(region, region, strip, RGN_OR);
+                    DeleteObject(strip);
+                }
             }
             // The system takes ownership only after a successful SetWindowRgn.
             if SetWindowRgn(self.hwnd, region, 1) == 0 {
