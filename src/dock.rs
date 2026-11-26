@@ -110,7 +110,7 @@ impl DockSettings {
     #[cfg(windows)]
     pub fn expanded_size(&self) -> [f32; 2] {
         let size = match self.edge {
-            DockEdge::Top | DockEdge::Bottom => [540.0, 318.0],
+            DockEdge::Top | DockEdge::Bottom => [680.0, 318.0],
             DockEdge::Left | DockEdge::Right => [390.0, 496.0],
         };
         size.map(|dimension| dimension * self.factor())

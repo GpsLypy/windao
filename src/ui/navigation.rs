@@ -50,6 +50,9 @@ impl Workbench {
                             })
                             .response
                             .on_hover_text("切换工作台页面（Ctrl+Tab）");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            super::quit_button(ui);
+                        });
                     });
                 });
             return;
@@ -106,7 +109,7 @@ impl Workbench {
                 }
                 query.on_hover_text("搜索工作台页面（Ctrl+K）");
                 let filter = self.navigation_query.trim().to_owned();
-                let height = (ui.available_height() - 48.0).max(48.0);
+                let height = (ui.available_height() - 92.0).max(48.0);
                 let mut choice = None;
                 ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -144,6 +147,7 @@ impl Workbench {
                 if nav_row(ui, Page::Settings, self.page == Page::Settings) {
                     choice = Some(Page::Settings);
                 }
+                super::quit_button(ui);
                 if let Some(page) = choice {
                     self.navigate(page);
                     self.navigation_query.clear();
@@ -219,7 +223,9 @@ fn tile_colors(page: Page) -> (Color32, Color32) {
         #[cfg(windows)]
         Page::Plugins => Color32::from_rgb(123, 89, 159),
         #[cfg(windows)]
-        Page::Tools => Color32::from_rgb(110, 116, 124),
+        Page::Tools | Page::Files => Color32::from_rgb(110, 116, 124),
+        #[cfg(windows)]
+        Page::Market => Color32::from_rgb(112, 122, 72),
     };
     (
         color,
@@ -316,6 +322,23 @@ pub(super) fn draw_icon(ui: &Ui, page: Page, center: Pos2, color: Color32, scale
             ring(-2., -2., 4.);
             line((-7., 4.), (6., 4.));
             line((-4., 7.), (3., 7.));
+        }
+        #[cfg(windows)]
+        Page::Files => {
+            line((-7., -4.), (-3., -4.));
+            line((-3., -4.), (-1., -2.));
+            line((-1., -2.), (7., -2.));
+            line((7., -2.), (7., 6.));
+            line((7., 6.), (-7., 6.));
+            line((-7., 6.), (-7., -4.));
+        }
+        #[cfg(windows)]
+        Page::Market => {
+            line((-7., -7.), (-7., 6.));
+            line((-7., 6.), (7., 6.));
+            line((-5., 2.), (-1., -2.));
+            line((-1., -2.), (2., 0.));
+            line((2., 0.), (7., -5.));
         }
         #[cfg(windows)]
         Page::Tools => {

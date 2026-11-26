@@ -226,6 +226,42 @@ fn sidebar_search_opens_match_on_enter_and_clears_on_escape() {
 }
 
 #[test]
+fn workbench_exit_button_targets_application_root() {
+    for width in [640., 1120.] {
+        let ctx = egui::Context::default();
+        let mut workbench = Workbench::default();
+        let child = egui::ViewportId::from_hash_of("windao-workbench");
+        let mut render = |events| {
+            let mut input = screen([width, 440.]);
+            input.viewport_id = child;
+            input.viewports.insert(
+                child,
+                egui::ViewportInfo {
+                    parent: Some(egui::ViewportId::ROOT),
+                    ..Default::default()
+                },
+            );
+            input.events = events;
+            ctx.run_ui(input, |ui| workbench.navigation(ui))
+        };
+        render(vec![]);
+        let pos = visible_text(&render(vec![]), "退出 NotchCalendar");
+        render(click_events(pos, true));
+        let out = render(click_events(pos, false));
+        assert!(
+            out.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .contains(&egui::ViewportCommand::Close)
+        );
+        assert!(
+            !out.viewport_output[&child]
+                .commands
+                .contains(&egui::ViewportCommand::Close)
+        );
+    }
+}
+
+#[test]
 fn sidebar_settings_remains_clickable_in_a_short_viewport() {
     let ctx = egui::Context::default();
     let mut workbench = Workbench::default();
@@ -353,5 +389,102 @@ fn capsule_opens_calendar_on_its_selected_day() {
     render(click_events(open, true));
     assert!(
         matches!(render(click_events(open, false)).1, Some(ShellAction::OpenCalendar(date)) if date == expected)
+    );
+}
+
+#[test]
+fn workbench_tasks_add_by_enter_check_and_reopen() {
+    use crate::workspace::TaskStatus;
+    let ctx = egui::Context::default();
+    configure_style(&ctx);
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path().into()).unwrap();
+    let mut tasks = tasks::Tasks::default();
+    let mut notice = None;
+    let mut render = |events: Vec<egui::Event>, store: &mut Store| {
+        let mut input = screen([460.0, 520.0]);
+        input.events = events;
+        ctx.run_ui(input, |ui| tasks.show(ui, store, &mut notice))
+    };
+    render(vec![], &mut store);
+    let mut click = |label: &str, store: &mut Store| {
+        let pos = visible_text(&render(vec![], store), label);
+        for pressed in [true, false] {
+            render(click_events(pos, pressed), store);
+        }
+    };
+    click("已完成", &mut store);
+    click("写下待办，回车添加", &mut store);
+    render(vec![egui::Event::Text("  发周报  ".into())], &mut store);
+    render(
+        vec![sidebar_key(egui::Key::Enter, egui::Modifiers::NONE)],
+        &mut store,
+    );
+    assert_eq!(store.state().tasks.len(), 1);
+    assert_eq!(store.state().tasks[0].title, "发周报");
+    for label in ["发周报", "已完成", "发周报"] {
+        let pos = visible_text(&render(vec![], &mut store), label);
+        for pressed in [true, false] {
+            render(click_events(pos, pressed), &mut store);
+        }
+        if label == "已完成" {
+            assert_eq!(store.state().tasks[0].status, TaskStatus::Completed);
+        }
+    }
+    assert_eq!(store.state().tasks[0].status, TaskStatus::Active);
+    let saved = store.state().tasks.clone();
+    drop(store);
+    assert_eq!(Store::open(dir.path().into()).unwrap().state().tasks, saved);
+}
+
+#[test]
+fn desktop_todo_accepts_text_and_persists_checked_tasks_and_pin() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = Store::open(directory.path().into()).unwrap();
+    let ctx = egui::Context::default();
+    configure_style(&ctx);
+    let mut desktop = desktop_todo::DesktopTodo::default();
+    let mut render = |events| {
+        let mut input = screen([300.0, 300.0]);
+        input.events = events;
+        ctx.run_ui(input, |ui| {
+            desktop.show(ui, &mut store);
+        })
+    };
+    render(vec![]);
+    let field = visible_text(&render(vec![]), "添加待办…");
+    for pressed in [true, false] {
+        render(click_events(field, pressed));
+    }
+    render(vec![egui::Event::Text("  整理桌面  ".into())]);
+    let add = visible_text(&render(vec![]), "添加");
+    for pressed in [true, false] {
+        render(click_events(add, pressed));
+    }
+    let task = visible_text(&render(vec![]), "整理桌面");
+    for pressed in [true, false] {
+        render(click_events(task, pressed));
+    }
+    let completed = visible_text(&render(vec![]), "已完成 1");
+    for pressed in [true, false] {
+        render(click_events(completed, pressed));
+    }
+    visible_text(&render(vec![]), "整理桌面");
+    let pin = visible_text(&render(vec![]), "置顶");
+    for pressed in [true, false] {
+        render(click_events(pin, pressed));
+    }
+    let task = visible_text(&render(vec![]), "整理桌面");
+    for pressed in [true, false] {
+        render(click_events(task, pressed));
+    }
+    visible_text(&render(vec![]), "待处理 1");
+    drop(store);
+    let restored = Store::open(directory.path().into()).unwrap();
+    assert!(!restored.state().settings.desktop_todo.pinned);
+    assert_eq!(restored.state().tasks[0].title, "整理桌面");
+    assert_eq!(
+        restored.state().tasks[0].status,
+        crate::workspace::TaskStatus::Active
     );
 }

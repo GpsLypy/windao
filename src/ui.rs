@@ -14,6 +14,7 @@ pub(crate) mod capsule;
 #[cfg(windows)]
 mod clipboard;
 mod dates;
+pub(crate) mod desktop_todo;
 mod dock_settings;
 mod focus;
 #[cfg(any(windows, test))]
@@ -58,6 +59,10 @@ pub enum Page {
     #[cfg(windows)]
     Tools,
     #[cfg(windows)]
+    Files,
+    #[cfg(windows)]
+    Market,
+    #[cfg(windows)]
     Performance,
     #[cfg(windows)]
     Clipboard,
@@ -81,6 +86,10 @@ impl Page {
         Self::Dates,
         #[cfg(windows)]
         Self::Weather,
+        #[cfg(windows)]
+        Self::Files,
+        #[cfg(windows)]
+        Self::Market,
         #[cfg(windows)]
         Self::Tools,
         #[cfg(windows)]
@@ -108,7 +117,11 @@ impl Page {
             #[cfg(windows)]
             Self::Weather => "天气",
             #[cfg(windows)]
-            Self::Tools => "工具",
+            Self::Tools => "工时收入",
+            #[cfg(windows)]
+            Self::Files => "文件",
+            #[cfg(windows)]
+            Self::Market => "行情",
             #[cfg(windows)]
             Self::Clipboard => "剪贴板",
             #[cfg(windows)]
@@ -146,10 +159,13 @@ pub enum ShellAction {
     SetPinned(bool),
     #[cfg_attr(not(windows), allow(dead_code))]
     OpenWorkbench(Page),
+    #[cfg(windows)]
+    LaunchSystem(crate::windows::SystemTool),
     #[cfg_attr(not(windows), allow(dead_code))]
     OpenCalendar(NaiveDate),
     #[cfg_attr(not(windows), allow(dead_code))]
     CompleteTask(uuid::Uuid),
+    ShowDesktopTodo,
     ToggleFocus,
 }
 
@@ -187,6 +203,20 @@ pub struct CapsuleFrame {
     pub action: Option<ShellAction>,
     pub rect: Rect,
     pub radius: u8,
+}
+
+pub(crate) fn request_quit(ctx: &egui::Context) {
+    ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+}
+
+fn quit_button(ui: &mut Ui) -> egui::Response {
+    let response = ui
+        .button("退出 NotchCalendar")
+        .on_hover_text("关闭所有 NotchCalendar 窗口并退出程序");
+    if response.clicked() {
+        request_quit(ui.ctx());
+    }
+    response
 }
 
 pub fn configure_style(ctx: &egui::Context) {
@@ -478,6 +508,11 @@ pub struct Workbench {
 
 impl Workbench {
     #[cfg(windows)]
+    pub fn take_desktop_todo_request(&mut self) -> bool {
+        std::mem::take(&mut self.tasks.open_desktop)
+    }
+
+    #[cfg(windows)]
     pub fn select_calendar_date(&mut self, date: NaiveDate) {
         self.calendar.select_date(date);
     }
@@ -597,13 +632,11 @@ impl Workbench {
                         #[cfg(windows)]
                         Page::Weather => self.weather.show(ui),
                         #[cfg(windows)]
-                        Page::Tools => {
-                            self.salary.show(ui, store.directory());
-                            ui.add_space(12.0);
-                            self.gold.show(ui);
-                            ui.add_space(12.0);
-                            self.tools.render(ui, store.directory());
-                        }
+                        Page::Tools => self.salary.show(ui, store.directory()),
+                        #[cfg(windows)]
+                        Page::Market => self.gold.show(ui),
+                        #[cfg(windows)]
+                        Page::Files => self.tools.render(ui, store.directory()),
                         #[cfg(windows)]
                         Page::Performance => self.performance.show(ui),
                         #[cfg(windows)]

@@ -421,6 +421,35 @@ pub fn reveal_local_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SystemTool {
+    Calculator,
+    ScreenCapture,
+}
+
+impl SystemTool {
+    pub fn open(self) -> Result<(), String> {
+        let (uri, name) = match self {
+            Self::Calculator => (w!("calculator:"), "计算器"),
+            Self::ScreenCapture => (w!("ms-screenclip:"), "截图工具"),
+        };
+        let result = unsafe {
+            ShellExecuteW(
+                GetActiveWindow(),
+                w!("open"),
+                uri,
+                null(),
+                null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if result as isize <= 32 {
+            return Err(format!("Windows 无法打开{name}，请检查是否已安装。"));
+        }
+        Ok(())
+    }
+}
+
 pub fn open_bluetooth_settings() -> bool {
     unsafe {
         ShellExecuteW(
@@ -472,6 +501,7 @@ pub fn open_web_link(link: &str) -> io::Result<()> {
 pub enum Action {
     Toggle,
     Workspace,
+    DesktopTodo,
     Settings,
     Quit,
     FinishDockDrag([i32; 2]),
@@ -662,6 +692,38 @@ impl Shell {
 
     pub fn displays(&self) -> Vec<Display> {
         self.displays.clone()
+    }
+
+    pub fn desktop_todo_placement(
+        &self,
+        bounds: Option<crate::workspace::DesktopTodoBounds>,
+    ) -> Option<([i32; 2], [f32; 2])> {
+        let contains =
+            |r: &RECT, [x, y]: [i32; 2]| x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+        let previous = bounds.and_then(|saved| {
+            self.displays
+                .iter()
+                .find(|display| contains(&display.bounds, saved.position))
+        });
+        let display = previous
+            .or_else(|| self.displays.iter().find(|d| d.primary))
+            .or_else(|| self.displays.first())?;
+        let scale = monitor_dpi(display.monitor, self.hwnd) as f32 / 96.0;
+        let r = display.work_area;
+        let [w, h] = bounds.map_or([400, 530], |saved| saved.size);
+        let width = (w.max(300) as f32).min(((r.right - r.left) as f32 / scale - 16.0).max(300.0));
+        let height = (h.max(240) as f32).min(((r.bottom - r.top) as f32 / scale - 56.0).max(240.0));
+        let right = (r.right - ((width + 16.0) * scale).round() as i32).max(r.left);
+        let bottom = (r.bottom - ((height + 42.0) * scale).round() as i32).max(r.top);
+        let [x, y] = bounds
+            .filter(|_| previous.is_some())
+            .map_or([right, r.top + (16.0 * scale) as i32], |saved| {
+                saved.position
+            });
+        Some((
+            [x.clamp(r.left, right), y.clamp(r.top, bottom)],
+            [width, height],
+        ))
     }
 
     pub fn cursor_over_capsule(&self) -> bool {
@@ -1392,6 +1454,7 @@ fn tray_menu(hwnd: HWND, coords: WPARAM) -> Option<Action> {
         }
         AppendMenuW(menu, MF_STRING, 1, w!("展开或收起胶囊"));
         AppendMenuW(menu, MF_STRING, 2, w!("打开主窗口"));
+        AppendMenuW(menu, MF_STRING, 5, w!("打开桌面待办"));
         AppendMenuW(menu, MF_STRING, 3, w!("设置"));
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         AppendMenuW(menu, MF_STRING, 4, w!("退出 NotchCalendar"));
@@ -1424,6 +1487,7 @@ fn tray_menu(hwnd: HWND, coords: WPARAM) -> Option<Action> {
             2 => Some(Action::Workspace),
             3 => Some(Action::Settings),
             4 => Some(Action::Quit),
+            5 => Some(Action::DesktopTodo),
             _ => None,
         }
     }

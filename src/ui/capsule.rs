@@ -13,6 +13,8 @@ use crate::{
 
 use super::{CapsuleFrame, Page, ShellAction, calendar, focus};
 
+mod launcher;
+
 const SURFACE: Color32 = Color32::BLACK;
 const CARD: Color32 = Color32::from_rgb(29, 29, 32);
 const BORDER: Color32 = Color32::from_rgb(51, 51, 56);
@@ -43,10 +45,20 @@ pub(crate) struct CapsuleState {
     #[cfg(windows)]
     player: super::music::Player,
     active: Option<Page>,
+    library_open: bool,
+    library_query: String,
     error: Option<String>,
 }
 
 impl CapsuleState {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn open_home(&mut self) {
+        self.active = None;
+        self.library_open = false;
+        self.library_query.clear();
+        self.calendar.select_date(Local::now().date_naive());
+    }
+
     #[cfg(windows)]
     pub(crate) fn report_error(&mut self, error: Option<String>) {
         self.error = error;
@@ -459,12 +471,17 @@ fn expanded_content(
         .active
         .is_none_or(|page| !options.pages.contains(&page))
     {
-        state.active = options.pages.first().copied();
+        state.active = if options.pages.contains(&Page::Calendar) {
+            Some(Page::Calendar)
+        } else {
+            options.pages.first().copied()
+        };
     }
     // Keep the switcher anchored while long notes or agendas scroll above it.
     let pages = options.pages;
-    let slot = (ui.available_width() / pages.len().max(1) as f32).min(40.0 * s);
-    let dock_size = vec2(slot * pages.len() as f32 + 6.0 * s, 34.0 * s);
+    let dock_pages = if state.library_open { &[] } else { pages };
+    let slot = (ui.available_width() / dock_pages.len().max(1) as f32).min(40.0 * s);
+    let dock_size = vec2(slot * dock_pages.len() as f32 + 6.0 * s, 34.0 * s);
     let dock_rect = Rect::from_center_size(
         pos2(
             ui.max_rect().center().x,
@@ -472,7 +489,7 @@ fn expanded_content(
         ),
         dock_size,
     );
-    if !pages.is_empty() {
+    if !dock_pages.is_empty() {
         ui.painter().rect(
             dock_rect,
             (17.0 * s) as u8,
@@ -481,7 +498,7 @@ fn expanded_content(
             StrokeKind::Inside,
         );
     }
-    for (index, &page) in pages.iter().enumerate() {
+    for (index, &page) in dock_pages.iter().enumerate() {
         let center = pos2(
             dock_rect.left() + 3.0 * s + (index as f32 + 0.5) * slot,
             dock_rect.center().y,
@@ -536,6 +553,27 @@ fn expanded_content(
                         caption(ui, active.title(), 12.0 * s, INK, true);
                     });
                 });
+        }
+        if toolbar_button(
+            ui,
+            "功能菜单",
+            state.library_open,
+            s,
+            |p, center, stroke| {
+                for dx in [-3.5, 3.5] {
+                    for dy in [-3.5, 3.5] {
+                        p.rect_stroke(
+                            Rect::from_center_size(center + vec2(dx, dy) * s, Vec2::splat(4.5 * s)),
+                            (1.2 * s).round() as u8,
+                            stroke,
+                            StrokeKind::Inside,
+                        );
+                    }
+                }
+            },
+        ) {
+            state.library_open = !state.library_open;
+            state.library_query.clear();
         }
         let pin_label = if options.pinned {
             "取消固定"
@@ -620,6 +658,32 @@ fn expanded_content(
     ui.add_space(9.0 * s);
     if let Some(error) = &state.error {
         caption(ui, error, 12.0 * s, Color32::from_rgb(255, 168, 163), false);
+    }
+
+    if state.library_open {
+        match launcher::show(ui, &mut state.library_query, state.active, pages, s) {
+            Some(launcher::Entry::Page(page)) if pages.contains(&page) => {
+                state.active = Some(page);
+                state.library_open = false;
+                state.library_query.clear();
+            }
+            Some(launcher::Entry::Page(page)) => action = Some(ShellAction::OpenWorkbench(page)),
+            Some(launcher::Entry::DesktopTodo) => action = Some(ShellAction::ShowDesktopTodo),
+            #[cfg(windows)]
+            Some(launcher::Entry::Calculator) => {
+                action = Some(ShellAction::LaunchSystem(
+                    crate::windows::SystemTool::Calculator,
+                ))
+            }
+            #[cfg(windows)]
+            Some(launcher::Entry::ScreenCapture) => {
+                action = Some(ShellAction::LaunchSystem(
+                    crate::windows::SystemTool::ScreenCapture,
+                ))
+            }
+            None => {}
+        }
+        return action;
     }
 
     let Some(page) = state.active else {
@@ -1077,6 +1141,7 @@ fn focus_elapsed(timer: &Focus, timestamp: i64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::Modifiers;
 
     #[test]
     fn today_overview_can_resume_a_paused_session() {
@@ -1269,6 +1334,111 @@ mod tests {
             }]);
         }
         assert_eq!(state.active, Some(Page::Calendar));
+    }
+
+    #[test]
+    fn title_menu_opens_from_calendar_and_routes_shortcuts_and_workbench_rows() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let workspace = Workspace::default();
+        let mut state = CapsuleState::default();
+        #[cfg(windows)]
+        let mut media = crate::music::Media::new(ctx.clone());
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut render = |state: &mut CapsuleState, events, pages: &[Page]| {
+            let mut action = None;
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(680.0, 318.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    action = expanded_content(
+                        ui,
+                        &workspace,
+                        state,
+                        &CapsuleOptions {
+                            dock: DockEdge::Top,
+                            expanded: true,
+                            pinned: false,
+                            avoiding: false,
+                            hidden: false,
+                            reduce_motion: true,
+                            collapsed_size: vec2(128.0, 32.0),
+                            collapsed_center: None,
+                            scale: 1.0,
+                            lyrics: None,
+                            clock_24h: true,
+                            minimal: false,
+                            pages,
+                        },
+                        #[cfg(windows)]
+                        &mut media,
+                    );
+                },
+            );
+            (output, action)
+        };
+        let pages = &[Page::Today, Page::Calendar, Page::Notes];
+        let (output, _) = render(&mut state, vec![], pages);
+        assert_eq!(state.active, Some(Page::Calendar));
+        let bounds = |output: egui::FullOutput, label: &str| {
+            let tree = output.platform_output.accesskit_update.unwrap();
+            tree.nodes
+                .into_iter()
+                .find_map(|(_, node)| {
+                    (node.label() == Some(label))
+                        .then(|| node.bounds())
+                        .flatten()
+                        .map(|rect| {
+                            pos2(
+                                ((rect.x0 + rect.x1) * 0.5) as f32,
+                                ((rect.y0 + rect.y1) * 0.5) as f32,
+                            )
+                        })
+                })
+                .unwrap_or_else(|| panic!("missing control {label}"))
+        };
+        let click = |pos, pressed| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    pressed,
+                    button: egui::PointerButton::Primary,
+                    modifiers: Modifiers::NONE,
+                },
+            ]
+        };
+        let menu = bounds(output, "功能菜单");
+        render(&mut state, click(menu, true), pages);
+        render(&mut state, click(menu, false), pages);
+        assert!(state.library_open);
+        let (output, _) = render(&mut state, vec![], pages);
+        let open = bounds(output, "通知");
+        render(&mut state, click(open, true), pages);
+        let (_, action) = render(&mut state, click(open, false), pages);
+        assert!(matches!(
+            action,
+            Some(ShellAction::OpenWorkbench(Page::Notifications))
+        ));
+        render(
+            &mut state,
+            vec![egui::Event::Key {
+                key: egui::Key::Num4,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::CTRL,
+            }],
+            pages,
+        );
+        assert_eq!(state.active, Some(Page::Notes));
+        assert!(!state.library_open);
+        state.open_home();
+        render(&mut state, vec![], &[Page::Today, Page::Notes]);
+        assert_eq!(state.active, Some(Page::Today));
     }
 
     #[test]

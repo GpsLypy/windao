@@ -297,6 +297,33 @@ pub enum Appearance {
     System,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopTodoBounds {
+    /// Virtual-screen pixels keep negative monitor coordinates unambiguous.
+    pub position: [i32; 2],
+    /// Content size in logical points follows the user's display scale.
+    pub size: [u32; 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DesktopTodoSettings {
+    pub open: bool,
+    pub pinned: bool,
+    pub bounds: Option<DesktopTodoBounds>,
+}
+
+impl Default for DesktopTodoSettings {
+    fn default() -> Self {
+        Self {
+            open: false,
+            pinned: true,
+            bounds: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -311,6 +338,8 @@ pub struct Settings {
     pub reminders: bool,
     #[serde(default)]
     pub taskbar_notifications: bool,
+    #[serde(default)]
+    pub desktop_todo: DesktopTodoSettings,
 }
 
 impl Default for Settings {
@@ -324,6 +353,7 @@ impl Default for Settings {
             dock: Default::default(),
             reminders: true,
             taskbar_notifications: false,
+            desktop_todo: DesktopTodoSettings::default(),
         }
     }
 }
@@ -662,6 +692,7 @@ impl From<LegacySettings> for Settings {
             dock: Default::default(),
             reminders: settings.reminders,
             taskbar_notifications: false,
+            desktop_todo: DesktopTodoSettings::default(),
         }
     }
 }

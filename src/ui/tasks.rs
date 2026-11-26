@@ -26,6 +26,10 @@ pub(super) struct Tasks {
     week: Option<NaiveDate>,
     query: String,
     filter: Option<TaskStatus>,
+    list_filter: ListFilter,
+    quick_title: String,
+    #[cfg(windows)]
+    pub(super) open_desktop: bool,
     draft: Option<TaskDraft>,
     delete: Option<Uuid>,
 }
@@ -41,7 +45,16 @@ impl Tasks {
         store: &mut Store,
         notice: &mut Option<Result<String, String>>,
     ) {
-        title(ui, "待办");
+        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.horizontal(|ui| {
+            title(ui, "待办");
+            #[cfg(windows)]
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("桌面待办").clicked() {
+                    self.open_desktop = true;
+                }
+            });
+        });
         let time = Local::now();
         let today = time.date_naive();
         let now = time.timestamp_millis();
@@ -54,7 +67,8 @@ impl Tasks {
             ] {
                 ui.selectable_value(&mut self.view, view, view.label());
             }
-            if self.draft.is_none() && primary(ui, "添加待办").clicked() {
+            if self.view != View::List && self.draft.is_none() && primary(ui, "添加待办").clicked()
+            {
                 self.new_task();
             }
             #[cfg(windows)]
@@ -75,35 +89,10 @@ impl Tasks {
                 }
             }
         });
-        ui.add_space(3.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.add(
-                TextEdit::singleline(&mut self.query)
-                    .hint_text("搜索待办")
-                    .char_limit(120)
-                    .desired_width(160.0),
-            );
-        });
-        if self.view != View::Calendar {
-            egui::Frame::new()
-                .fill(ui.visuals().faint_bg_color)
-                .corner_radius(14)
-                .inner_margin(2)
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
-                        ui.selectable_value(&mut self.filter, None, "全部");
-                        for status in statuses() {
-                            ui.selectable_value(
-                                &mut self.filter,
-                                Some(status),
-                                status_label(status),
-                            );
-                        }
-                    });
-                });
+        ui.add_space(6.0);
+        if self.view == View::List && self.draft.is_none() {
+            self.quick_composer(ui, store, notice);
         }
-        ui.add_space(4.0);
         if let Some(draft) = self.draft.as_mut() {
             let mut save = false;
             let mut cancel = false;
@@ -115,40 +104,72 @@ impl Tasks {
                 });
             });
             if save {
-                let result = draft.build().and_then(|task| {
-                    store.update(|state| {
-                        if let Some(existing) =
-                            state.tasks.iter_mut().find(|item| item.id == task.id)
-                        {
-                            *existing = task;
-                        } else {
-                            state.tasks.push(task);
-                        }
-                        Ok(())
-                    })
-                });
-                if result.is_ok() {
+                let reveal = self.view == View::List && draft.original.is_none();
+                let result = draft.save(store);
+                if let Ok(id) = &result {
                     self.draft = None;
+                    if reveal
+                        && let Some(task) = store.state().tasks.iter().find(|task| task.id == *id)
+                    {
+                        self.quick_title.clear();
+                        self.reveal(task, today, now);
+                    }
                 }
                 *notice = Some(result.map(|_| "待办已保存".into()));
             } else if cancel {
                 self.draft = None;
             }
         }
+        ui.horizontal_wrapped(|ui| {
+            if self.view == View::List {
+                for filter in ListFilter::MAIN {
+                    ui.selectable_value(&mut self.list_filter, filter, filter.label());
+                }
+                ui.menu_button(
+                    if ListFilter::MORE.contains(&self.list_filter) {
+                        self.list_filter.label()
+                    } else {
+                        "更多"
+                    },
+                    |ui| {
+                        for filter in ListFilter::MORE {
+                            if ui
+                                .selectable_value(&mut self.list_filter, filter, filter.label())
+                                .clicked()
+                            {
+                                ui.close();
+                            }
+                        }
+                    },
+                );
+            } else {
+                ui.selectable_value(&mut self.filter, None, "全部");
+                for status in statuses() {
+                    ui.selectable_value(&mut self.filter, Some(status), status_label(status));
+                }
+            }
+            ui.add(
+                TextEdit::singleline(&mut self.query)
+                    .hint_text("搜索待办")
+                    .char_limit(120)
+                    .desired_width(136.0),
+            );
+        });
+        ui.add_space(5.0);
         let query = self.query.trim().to_lowercase();
         let mut tasks: Vec<_> = store
             .state()
             .tasks
             .iter()
             .filter(|task| {
-                (self.view == View::Calendar
-                    || self
+                let in_view = match self.view {
+                    View::List => self.list_filter.matches(task, today, now),
+                    View::Calendar => true,
+                    _ => self
                         .filter
-                        .is_none_or(|filter| task.status_on(today) == filter))
-                    && (query.is_empty()
-                        || [&task.title, &task.category, &task.notes]
-                            .iter()
-                            .any(|text| text.to_lowercase().contains(&query)))
+                        .is_none_or(|status| task.status_on(today) == status),
+                };
+                in_view && matches_query(task, &query)
             })
             .collect();
         tasks.sort_by_key(|task| {
@@ -162,23 +183,33 @@ impl Tasks {
         let mut change = None;
         match self.view {
             View::List => {
-                if tasks.is_empty() {
-                    card(ui, |ui| {
-                        if store.state().tasks.is_empty() {
-                            subhead(ui, "还没有待办");
-                            ui.weak("添加第一项待办，记录接下来要做的事。");
-                        } else {
-                            subhead(ui, "未找到符合条件的待办");
-                            if ui.button("清除筛选和搜索").clicked() {
-                                self.filter = None;
+                card(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    if tasks.is_empty() {
+                        if !query.is_empty() {
+                            ui.weak("没有匹配的待办");
+                            if ui.button("清除搜索").clicked() {
                                 self.query.clear();
                             }
+                        } else {
+                            ui.weak(self.list_filter.empty());
                         }
-                    });
-                }
-                for task in tasks {
-                    self.row(ui, task, today, now, &mut change);
-                }
+                    }
+                    for (index, task) in tasks.iter().enumerate() {
+                        if index > 0 {
+                            ui.separator();
+                        }
+                        self.row(ui, task, today, now, &mut change);
+                    }
+                    if !tasks.is_empty() {
+                        ui.separator();
+                        ui.label(
+                            RichText::new(format!("共 {} 项", tasks.len()))
+                                .weak()
+                                .small(),
+                        );
+                    }
+                });
             }
             View::Quadrants => self.quadrants(ui, &tasks, today, now, &mut change),
             View::Calendar => self.calendar(ui, &tasks, now, &mut change),
@@ -206,6 +237,72 @@ impl Tasks {
         }
     }
 
+    fn reveal(&mut self, task: &Task, today: NaiveDate, now: i64) {
+        if !matches_query(task, &self.query.trim().to_lowercase()) {
+            self.query.clear();
+        }
+        if !self.list_filter.matches(task, today, now) {
+            self.list_filter = if ListFilter::Open.matches(task, today, now) {
+                ListFilter::Open
+            } else {
+                ListFilter::All
+            };
+        }
+    }
+
+    fn quick_composer(
+        &mut self,
+        ui: &mut Ui,
+        store: &mut Store,
+        notice: &mut Option<Result<String, String>>,
+    ) {
+        ui.horizontal(|ui| {
+            let input = ui.add(
+                TextEdit::singleline(&mut self.quick_title)
+                    .hint_text("写下待办，回车添加")
+                    .margin(egui::Margin::symmetric(9, 6))
+                    .char_limit(500)
+                    .desired_width((ui.available_width() - 146.0).max(72.0)),
+            );
+            let enter = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let add = ui
+                .add_enabled_ui(!self.quick_title.trim().is_empty(), |ui| {
+                    primary(ui, "添加")
+                })
+                .inner
+                .clicked();
+            if (add || enter) && !self.quick_title.trim().is_empty() {
+                let result = quick_task(&self.quick_title).and_then(|task| {
+                    let id = task.id;
+                    store.update(|state| {
+                        state.tasks.push(task);
+                        Ok(())
+                    })?;
+                    Ok(id)
+                });
+                match result {
+                    Ok(id) => {
+                        self.quick_title.clear();
+                        if let Some(task) = store.state().tasks.iter().find(|task| task.id == id) {
+                            let time = Local::now();
+                            self.reveal(task, time.date_naive(), time.timestamp_millis());
+                        }
+                        *notice = None;
+                    }
+                    Err(error) => *notice = Some(Err(error)),
+                }
+                input.request_focus();
+            }
+            if ui.button("详细添加").clicked() {
+                self.draft = Some(TaskDraft {
+                    name: self.quick_title.clone(),
+                    ..Default::default()
+                });
+            }
+        });
+        ui.add_space(6.0);
+    }
+
     fn row(
         &mut self,
         ui: &mut Ui,
@@ -221,85 +318,121 @@ impl Tasks {
             .date_naive();
         ui.push_id((task.id, date), |ui| {
             egui::Frame::new()
-                .fill(ui.visuals().faint_bg_color)
+                .fill(if self.view == View::List {
+                    egui::Color32::TRANSPARENT
+                } else {
+                    ui.visuals().faint_bg_color
+                })
                 .corner_radius(7)
-                .inner_margin(egui::Margin::symmetric(8, 3))
+                .inner_margin(egui::Margin::symmetric(4, 3))
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
-                    ui.horizontal_wrapped(|ui| {
-                        let mut completed = status == TaskStatus::Completed;
-                        let title = if completed {
-                            RichText::new(&task.title).weak().strikethrough()
-                        } else {
-                            RichText::new(&task.title).strong()
-                        };
-                        if ui
-                            .add_enabled(
-                                scheduled && (!task.repeat.is_repeating() || date == today),
-                                egui::Checkbox::new(&mut completed, title),
-                            )
-                            .changed()
-                        {
-                            *change = Some(Change::Status(
-                                task.id,
-                                if completed {
-                                    TaskStatus::Completed
-                                } else {
-                                    TaskStatus::Active
-                                },
-                            ));
-                        }
-                        if self.draft.is_none() {
-                            ui.menu_button("•••", |ui| {
-                                if ui.button("编辑").clicked() {
-                                    self.draft = Some(TaskDraft::from_task(task));
-                                    ui.close();
-                                }
-                                if self.delete == Some(task.id) {
-                                    if ui.button("确认删除").clicked() {
-                                        *change = Some(Change::Remove(task.id));
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if self.draft.is_none() {
+                                ui.menu_button("•••", |ui| {
+                                    if ui.button("编辑").clicked() {
+                                        self.draft = Some(TaskDraft::from_task(task));
+                                        ui.close();
                                     }
-                                    if ui.button("取消").clicked() {
-                                        self.delete = None;
+                                    if self.delete == Some(task.id) {
+                                        if ui.button("确认删除").clicked() {
+                                            *change = Some(Change::Remove(task.id));
+                                            ui.close();
+                                        }
+                                        if ui.button("取消").clicked() {
+                                            self.delete = None;
+                                            ui.close();
+                                        }
+                                    } else if ui.button("删除").clicked() {
+                                        self.delete = Some(task.id);
                                     }
-                                } else if ui.button("删除").clicked() {
-                                    self.delete = Some(task.id);
-                                }
-                            })
-                            .response
-                            .on_hover_text("待办操作");
-                        }
-                        if scheduled {
-                            ui.weak(status_label(status));
-                        } else {
-                            ui.weak("今天无需处理");
-                        }
-                        if task.repeat.is_repeating() {
-                            ui.weak(repeat_label(task.repeat));
-                        }
-                        if task.priority != Priority::None {
-                            ui.label(priority_label(task.priority));
-                        }
-                        if !task.category.is_empty() {
-                            ui.weak(category_label(&task.category));
-                        }
-                        if let Some(due_at) = task.due_at_on(date) {
-                            let due = format!("截止 {}", display_time(due_at, "%m-%d %H:%M"));
-                            if status == TaskStatus::Active && due_at < now {
-                                ui.colored_label(ui.visuals().warn_fg_color, due);
-                            } else {
-                                ui.weak(due);
+                                })
+                                .response
+                                .on_hover_text("待办操作");
                             }
-                        }
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                                    let outline = ui.visuals().weak_text_color();
+                                    ui.visuals_mut().widgets.inactive.bg_stroke =
+                                        egui::Stroke::new(1.2_f32, outline);
+                                    let mut completed = status == TaskStatus::Completed;
+                                    let title = if completed {
+                                        RichText::new(&task.title).weak().strikethrough()
+                                    } else {
+                                        RichText::new(&task.title).strong()
+                                    };
+                                    if ui
+                                        .add_enabled(
+                                            scheduled
+                                                && (!task.repeat.is_repeating() || date == today),
+                                            egui::Checkbox::new(&mut completed, title),
+                                        )
+                                        .changed()
+                                    {
+                                        *change = Some(Change::Status(
+                                            task.id,
+                                            if completed {
+                                                TaskStatus::Completed
+                                            } else {
+                                                TaskStatus::Active
+                                            },
+                                        ));
+                                    }
+                                },
+                            );
+                        });
                     });
+                    let mut metadata = Vec::new();
+                    if !scheduled {
+                        metadata.push("今天无需处理".into());
+                    } else if matches!(status, TaskStatus::Deferred | TaskStatus::Cancelled) {
+                        metadata.push(status_label(status).into());
+                    }
+                    if task.repeat.is_repeating() {
+                        metadata.push(repeat_label(task.repeat));
+                    }
+                    if task.priority != Priority::None {
+                        metadata.push(priority_label(task.priority).into());
+                    }
+                    if !task.category.is_empty() && task.category != "none" {
+                        metadata.push(category_label(&task.category).into());
+                    }
                     if self.view == View::List {
                         let quadrant = Quadrant::for_task(task, now);
                         if quadrant != Quadrant::Unassigned {
-                            ui.weak(quadrant.label());
+                            metadata.push(quadrant.label().into());
                         }
                     }
+                    let due = task.due_at_on(date);
+                    if !metadata.is_empty() || due.is_some() {
+                        ui.spacing_mut().interact_size.y = 17.0;
+                        ui.horizontal_wrapped(|ui| {
+                            if let Some(due) = due {
+                                let overdue =
+                                    matches!(status, TaskStatus::Active | TaskStatus::Deferred)
+                                        && due < now;
+                                let prefix = if overdue { "已逾期" } else { "截止" };
+                                let text = format!("{prefix} {}", display_time(due, "%m-%d %H:%M"));
+                                if overdue {
+                                    ui.colored_label(
+                                        ui.visuals().warn_fg_color,
+                                        RichText::new(text).small(),
+                                    );
+                                } else {
+                                    ui.label(RichText::new(text).small().weak());
+                                }
+                            }
+                            if !metadata.is_empty() {
+                                ui.label(RichText::new(metadata.join(" · ")).small().weak());
+                            }
+                        });
+                    }
                     if !task.notes.is_empty() {
-                        ui.label(&task.notes);
+                        ui.add(egui::Label::new(RichText::new(&task.notes).weak()).truncate())
+                            .on_hover_text(&task.notes);
                     }
                 })
         });
@@ -454,6 +587,94 @@ impl Tasks {
                 }
             }
         });
+    }
+}
+
+pub(super) fn quick_task(title: &str) -> Result<Task, String> {
+    TaskDraft {
+        name: title.into(),
+        ..Default::default()
+    }
+    .build()
+}
+
+fn matches_query(task: &Task, query: &str) -> bool {
+    query.is_empty()
+        || [
+            &task.title,
+            &task.category,
+            category_label(&task.category),
+            &task.notes,
+        ]
+        .into_iter()
+        .any(|text| text.to_lowercase().contains(query))
+}
+
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+enum ListFilter {
+    #[default]
+    Open,
+    Today,
+    Overdue,
+    Completed,
+    All,
+    Active,
+    Deferred,
+    Cancelled,
+}
+
+impl ListFilter {
+    const MAIN: [Self; 5] = [
+        Self::Open,
+        Self::Today,
+        Self::Overdue,
+        Self::Completed,
+        Self::All,
+    ];
+    const MORE: [Self; 3] = [Self::Active, Self::Deferred, Self::Cancelled];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Open => "未完成",
+            Self::Today => "今天",
+            Self::Overdue => "已逾期",
+            Self::Completed => "已完成",
+            Self::All => "全部",
+            Self::Active => "待处理",
+            Self::Deferred => "已暂缓",
+            Self::Cancelled => "已取消",
+        }
+    }
+
+    fn empty(self) -> &'static str {
+        match self {
+            Self::Today => "今天没有到期或需要重复处理的待办。",
+            Self::Overdue => "没有逾期待办。",
+            Self::Completed => "勾选完成的待办会出现在这里。",
+            Self::Open | Self::All => "在上方写下你的下一项待办。",
+            Self::Active | Self::Deferred | Self::Cancelled => "没有此状态的待办。",
+        }
+    }
+
+    fn matches(self, task: &Task, today: NaiveDate, now: i64) -> bool {
+        let status = task.status_on(today);
+        let open = matches!(status, TaskStatus::Active | TaskStatus::Deferred);
+        match self {
+            Self::Open => open,
+            Self::Today => {
+                open && if task.repeat.is_repeating() {
+                    task.scheduled_on(today)
+                } else {
+                    due_date(task) == Some(today)
+                }
+            }
+            Self::Overdue => open && task.due_at_on(today).is_some_and(|due| due < now),
+            Self::Completed => status == TaskStatus::Completed,
+            Self::All => true,
+            Self::Active => status == TaskStatus::Active,
+            Self::Deferred => status == TaskStatus::Deferred,
+            Self::Cancelled => status == TaskStatus::Cancelled,
+        }
     }
 }
 
@@ -745,10 +966,35 @@ impl TaskDraft {
         }
     }
 
+    fn save(&self, store: &mut Store) -> Result<Uuid, String> {
+        let task = self.build()?;
+        let id = task.id;
+        store.update(|state| {
+            if let Some(original) = &self.original {
+                let existing = state
+                    .tasks
+                    .iter_mut()
+                    .find(|item| item.id == id)
+                    .ok_or("这项待办已删除，请取消编辑。")?;
+                if existing != original {
+                    return Err("这项待办已更新，请取消并重新打开编辑。".into());
+                }
+                *existing = task;
+            } else {
+                state.tasks.push(task);
+            }
+            Ok(())
+        })?;
+        Ok(id)
+    }
+
     fn build(&self) -> Result<Task, String> {
         let title = self.name.trim();
         if title.is_empty() {
             return Err("请输入待办名称。".into());
+        }
+        if title.contains(['\r', '\n']) || title.encode_utf16().count() > 500 {
+            return Err("请缩短待办名称并保留在同一行。".into());
         }
         let now = Local::now().timestamp_millis();
         let due_at = if self.due.trim().is_empty() {
@@ -893,5 +1139,71 @@ fn reminder_label(offsets: &[u32]) -> String {
         [] | [0] => "到期时".into(),
         [minutes] => format!("提前 {minutes} 分钟"),
         _ => format!("{} 条提醒", offsets.len()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn everyday_filters_handle_due_times_and_repeat_completions() {
+        let now = parse_datetime("2026-11-26 12:00").unwrap();
+        let today = local_timestamp(now).unwrap().date_naive();
+        let mut task = quick_task("  和设计师同步  ").unwrap();
+        assert_eq!(task.title, "和设计师同步");
+        assert!(ListFilter::Open.matches(&task, today, now));
+        assert!(!ListFilter::Today.matches(&task, today, now));
+        task.due_at = Some(now);
+        task.set_status(TaskStatus::Deferred, now);
+        assert!(ListFilter::Today.matches(&task, today, now));
+        assert!(!ListFilter::Overdue.matches(&task, today, now));
+        assert!(ListFilter::Overdue.matches(&task, today, now + 1));
+        task.set_status(TaskStatus::Cancelled, now);
+        assert!(!ListFilter::Today.matches(&task, today, now));
+        assert!(!ListFilter::Open.matches(&task, today, now));
+        assert!(ListFilter::All.matches(&task, today, now));
+        task.set_status(TaskStatus::Active, now);
+        task.due_at = None;
+        task.repeat = TaskRepeat::Weekdays(weekday_bit(today.weekday()));
+        assert!(ListFilter::Today.matches(&task, today, now));
+        assert!(!ListFilter::Today.matches(&task, today.succ_opt().unwrap(), now));
+        task.set_status(TaskStatus::Completed, now);
+        assert!(!ListFilter::Open.matches(&task, today, now));
+        assert!(ListFilter::Completed.matches(&task, today, now));
+        assert!(quick_task("  ").is_err());
+        assert!(quick_task("两\n行").is_err());
+        assert!(quick_task(&"🗓".repeat(251)).is_err());
+    }
+
+    #[test]
+    fn editor_preserves_changes_from_another_todo_surface() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().into()).unwrap();
+        let task = quick_task("修改周报").unwrap();
+        let mut draft = TaskDraft::from_task(&task);
+        draft.notes = "等待回复".into();
+        store
+            .update(|state| {
+                state.tasks.push(task);
+                Ok(())
+            })
+            .unwrap();
+        store
+            .update(|state| {
+                state.tasks[0].set_status(TaskStatus::Completed, Local::now().timestamp_millis());
+                Ok(())
+            })
+            .unwrap();
+        assert!(draft.save(&mut store).is_err());
+        assert_eq!(store.state().tasks[0].status, TaskStatus::Completed);
+        store
+            .update(|state| {
+                state.tasks.clear();
+                Ok(())
+            })
+            .unwrap();
+        assert!(draft.save(&mut store).is_err());
+        assert!(store.state().tasks.is_empty());
     }
 }

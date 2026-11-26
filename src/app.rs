@@ -1,3 +1,5 @@
+mod desktop_todo;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -74,6 +76,7 @@ pub fn run() -> Result<(), String> {
                 workspace_open: false,
                 focus_workspace: false,
                 workbench: Workbench::default(),
+                desktop_todo: desktop_todo::TodoWindow::default(),
                 sources,
                 capsule_state: CapsuleState::default(),
                 pixel_shift: PixelShift::default(),
@@ -105,6 +108,7 @@ struct Desktop {
     workspace_open: bool,
     focus_workspace: bool,
     workbench: Workbench,
+    desktop_todo: desktop_todo::TodoWindow,
     sources: FeatureSources,
     capsule_state: CapsuleState,
     pixel_shift: PixelShift,
@@ -129,6 +133,9 @@ impl Desktop {
 
     fn set_expanded(&mut self, expanded: bool, focus: bool) {
         if self.expanded != expanded {
+            if expanded {
+                self.capsule_state.open_home();
+            }
             self.expanded = expanded;
             self.pointer_left_at = None;
             self.fold_at = (!expanded).then(|| Instant::now() + FOLD_TIME);
@@ -255,6 +262,9 @@ impl Desktop {
             },
         );
         self.workspace_open = !close;
+        if self.workbench.take_desktop_todo_request() {
+            self.open_desktop_todo(ctx);
+        }
         let settings_changed = self.store.state().settings != previous_settings;
         let taskbar_cleared = self.workbench.take_taskbar_clear();
         if taskbar_cleared
@@ -483,7 +493,7 @@ impl Desktop {
                     || input.key_pressed(egui::Key::Enter)
                     || input.key_pressed(egui::Key::Space)
             });
-            self.apply_capsule_action(action, explicit);
+            self.apply_capsule_action(action, explicit, &ctx);
             ctx.request_repaint();
         }
         if self.expanded && !self.pinned {
@@ -503,7 +513,7 @@ impl Desktop {
         }
     }
 
-    fn apply_capsule_action(&mut self, action: ShellAction, explicit: bool) {
+    fn apply_capsule_action(&mut self, action: ShellAction, explicit: bool, ctx: &egui::Context) {
         match action {
             ShellAction::Expand if !self.suppress_hover || explicit => {
                 self.override_avoidance = self.occlusion == Occlusion::Covered;
@@ -513,6 +523,10 @@ impl Desktop {
             ShellAction::Collapse => self.set_expanded(false, false),
             ShellAction::SetPinned(value) => self.pinned = value,
             ShellAction::OpenWorkbench(page) => self.open_workbench(page),
+            ShellAction::LaunchSystem(tool) => match tool.open() {
+                Ok(()) => self.set_expanded(false, false),
+                Err(error) => self.capsule_state.report_error(Some(error)),
+            },
             ShellAction::OpenCalendar(date) => {
                 self.workbench.select_calendar_date(date);
                 self.open_workbench(Page::Calendar);
@@ -531,6 +545,12 @@ impl Desktop {
                     Ok(())
                 });
                 self.capsule_state.report_error(result.err());
+            }
+            ShellAction::ShowDesktopTodo => {
+                self.open_desktop_todo(ctx);
+                if !self.pinned {
+                    self.set_expanded(false, false);
+                }
             }
             ShellAction::ToggleFocus => {
                 let now = Utc::now().timestamp_millis();
@@ -575,8 +595,9 @@ impl eframe::App for Desktop {
                     }
                 }
                 Action::Workspace => self.open_workbench(Page::Today),
+                Action::DesktopTodo => self.open_desktop_todo(ctx),
                 Action::Settings => self.open_workbench(Page::Settings),
-                Action::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
+                Action::Quit => ui::request_quit(ctx),
                 Action::FinishDockDrag(pointer) => {
                     let mut dock = self.store.state().settings.dock.clone();
                     let placement = self
@@ -625,7 +646,8 @@ impl eframe::App for Desktop {
                     && self.occlusion == Occlusion::Clear)
                 || (self.workspace_open && self.workbench.page == Page::Music),
         );
-        let repaint_clock = self.expanded
+        let repaint_clock = self.store.state().settings.desktop_todo.open
+            || self.expanded
             || self.workspace_open
             || (!dock.minimal && self.occlusion == Occlusion::Clear);
         self.sources.media.poll();
@@ -648,6 +670,13 @@ impl eframe::App for Desktop {
         self.draw_capsule(ui);
         if self.workspace_open {
             self.draw_workbench(&ctx);
+        }
+        self.draw_desktop_todo(&ctx);
+    }
+
+    fn on_exit(&mut self, _: Option<&eframe::glow::Context>) {
+        if let Err(error) = self.save_todo_window(false) {
+            windows::show_error(&error);
         }
     }
 
