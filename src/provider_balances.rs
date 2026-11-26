@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(any(test, windows))]
 pub(crate) mod authorized;
+pub(crate) mod local_profiles;
 pub(crate) mod profiles;
 pub(crate) mod relay;
 pub(crate) mod statusline;
@@ -24,11 +25,15 @@ pub(crate) enum Provider {
     WorkBuddy,
     Gemini,
     ClaudeStatus,
+    CodexLocal,
+    ClaudeDesktop,
     Relay,
 }
 
 impl Provider {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
+        Self::CodexLocal,
+        Self::ClaudeDesktop,
         Self::DeepSeek,
         Self::GlmChina,
         Self::GlmGlobal,
@@ -53,7 +58,9 @@ impl Provider {
             Self::GrokBot => "Grok Bot",
             Self::WorkBuddy => "WorkBuddy",
             Self::Gemini => "Gemini 网页订阅",
-            Self::ClaudeStatus => "Claude 状态栏",
+            Self::CodexLocal => "Codex 本机账户",
+            Self::ClaudeDesktop => "Claude 桌面版",
+            Self::ClaudeStatus => "Claude Code 状态栏",
             Self::DeepSeek => "DeepSeek API",
             Self::GlmChina => "智谱 GLM Coding Plan",
             Self::GlmGlobal => "Z.AI GLM Coding Plan",
@@ -71,7 +78,11 @@ impl Provider {
             Self::GrokBot => {
                 "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus"
             }
-            Self::Gemini | Self::ClaudeStatus | Self::Relay => "",
+            Self::Gemini
+            | Self::ClaudeStatus
+            | Self::CodexLocal
+            | Self::ClaudeDesktop
+            | Self::Relay => "",
             Self::DeepSeek => "https://api.deepseek.com/user/balance",
             Self::GlmChina => "https://open.bigmodel.cn/api/monitor/usage/quota/limit",
             Self::GlmGlobal => "https://api.z.ai/api/monitor/usage/quota/limit",
@@ -81,7 +92,14 @@ impl Provider {
     }
 
     pub fn report_only(self) -> bool {
-        matches!(self, Self::Gemini | Self::ClaudeStatus | Self::GrokBot)
+        matches!(
+            self,
+            Self::Gemini
+                | Self::ClaudeStatus
+                | Self::CodexLocal
+                | Self::ClaudeDesktop
+                | Self::GrokBot
+        )
     }
     pub fn is_plan(self) -> bool {
         matches!(self, Self::GlmChina | Self::GlmGlobal)
@@ -94,7 +112,11 @@ impl Provider {
             Self::KimiCode => "kimi-code.dpapi",
             Self::KiroUs | Self::KiroEu => "kiro.dpapi",
             Self::WorkBuddy => "workbuddy.dpapi",
-            Self::Gemini | Self::ClaudeStatus | Self::GrokBot => "report-only",
+            Self::Gemini
+            | Self::ClaudeStatus
+            | Self::CodexLocal
+            | Self::ClaudeDesktop
+            | Self::GrokBot => "report-only",
             Self::DeepSeek => "deepseek-api.dpapi",
             Self::GlmChina => "glm-cn-plan.dpapi",
             Self::GlmGlobal => "glm-global-plan.dpapi",
@@ -337,6 +359,22 @@ pub(super) mod connection {
         header.push_str(key);
         if provider == Provider::Relay {
             let base = relay::base(&profile.endpoint)?;
+            if let Some(user) = profile.relay_user {
+                let user = user.to_string();
+                return relay::user_balance(&base, |url, needs_token| {
+                    if needs_token {
+                        crate::calendar_sync::authorized_json(
+                            "GET",
+                            url,
+                            &[("Authorization", &header), ("New-Api-User", &user)],
+                            "",
+                        )
+                    } else {
+                        crate::calendar_sync::get_json_response(url, None)
+                    }
+                    .map_err(|_| "连接 New API 站点失败。")
+                });
+            }
             if !profile.balance_field.is_empty() {
                 let (status, body) = crate::calendar_sync::get_json_response(&base, Some(&header))
                     .map_err(|_| "连接自定义接口失败。")?;

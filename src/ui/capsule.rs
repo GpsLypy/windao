@@ -7,7 +7,7 @@ use eframe::egui::{
 };
 
 use crate::{
-    dock::{CapsuleSkin, DockEdge, DockSettings},
+    dock::{CapsuleSkin, DockEdge, DockSettings, Resident},
     workspace::{Focus, Store, Task, TaskStatus, Workspace},
 };
 
@@ -15,6 +15,7 @@ use super::{CapsuleFrame, Page, ShellAction, calendar, focus};
 
 mod companion;
 mod launcher;
+mod resident;
 
 mod skin;
 use skin::Palette;
@@ -75,11 +76,6 @@ pub(crate) fn compact_size(store: &Store, dock: &DockSettings, lyrics: Option<&s
         DockEdge::Top | DockEdge::Bottom if dock.minimal => vec2(74.0, 24.0),
         DockEdge::Top if lyrics.is_some() => vec2(340.0, 34.0),
         DockEdge::Top | DockEdge::Bottom if has_timer => vec2(158.0, 32.0),
-        DockEdge::Top | DockEdge::Bottom
-            if store.state().settings.local_ai_usage && store.state().settings.capsule_ai_usage =>
-        {
-            vec2(210.0, 32.0)
-        }
         DockEdge::Top | DockEdge::Bottom => vec2(128.0, 32.0),
         DockEdge::Left | DockEdge::Right if dock.minimal => vec2(22.0, 68.0),
         DockEdge::Left | DockEdge::Right => vec2(38.0, 104.0),
@@ -101,7 +97,16 @@ pub(crate) fn compact_size(store: &Store, dock: &DockSettings, lyrics: Option<&s
     } else {
         Vec2::ZERO
     };
-    (size + extra + metrics) * scale
+    let ai = if store.state().settings.local_ai_usage
+        && store.state().settings.capsule_ai_usage
+        && dock.edge.is_horizontal()
+        && !dock.minimal
+    {
+        vec2(100., 0.)
+    } else {
+        Vec2::ZERO
+    };
+    (size + extra + metrics + ai) * scale
 }
 
 pub(crate) fn compact_with_weather(
@@ -254,33 +259,41 @@ pub(crate) fn draw(
         let playing = matches!(media.status(),crate::music::Status::Ready(track) if track.state==crate::music::PlaybackState::Playing);
         #[cfg(not(windows))]
         let playing = false;
-        let mut clock_rect = rect;
-        let show_metrics = store.state().settings.capsule_device_metrics
-            && options.dock.is_horizontal()
-            && !options.minimal;
-        if show_metrics {
-            clock_rect.max.x -= 194.0 * options.scale;
+        let slots = resident::layout(rect, store, state, &options);
+        let clock_rect = slots[Resident::Clock as usize].unwrap_or(rect);
+        if let Some(area) = slots[Resident::Companion as usize] {
+            draw_companion(
+                root,
+                store,
+                area.center(),
+                options.scale.min(area.width() / 24.),
+                playing,
+                options.reduce_motion,
+            );
         }
-        let metrics_start = clock_rect.max.x;
-        let weather = state
-            .weather_caption
-            .as_ref()
-            .filter(|_| options.dock.is_horizontal() && !options.minimal);
-        if weather.is_some() {
-            clock_rect.max.x -= 46. * options.scale;
-        }
-        let weather_start = clock_rect.right();
-        let badge = (state.alert_count > 0 && !options.minimal).then(|| {
-            let mut badge = clock_rect;
-            if options.dock.is_horizontal() {
-                clock_rect.max.x -= 18.0 * options.scale;
-                badge.min.x = clock_rect.right();
-            } else {
-                clock_rect.min.y += 17.0 * options.scale;
-                badge.max.y = clock_rect.top();
+        if let Some(area) = slots[Resident::Ai as usize]
+            && let Some(caption) = &state.ai_caption
+        {
+            let response = root.interact(area, Id::new("compact-ai"), egui::Sense::click());
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, caption));
+            root.scope_builder(UiBuilder::new().max_rect(area), |ui| {
+                ui.set_clip_rect(ui.clip_rect().intersect(area));
+                let inset = 5. * options.scale;
+                truncated_text(
+                    ui,
+                    caption,
+                    pos2(area.left() + inset, area.center().y),
+                    (area.width() - 2. * inset).max(1.),
+                    12. * options.scale,
+                    tone.caption,
+                );
+            });
+            if response.clicked() {
+                frame.action = Some(ShellAction::OpenWorkbench(Page::AiUsage));
             }
-            badge
-        });
+            response.on_hover_text(caption);
+        }
         if let Some(message) = &state.system_change {
             let response = root.interact(
                 clock_rect,
@@ -320,21 +333,12 @@ pub(crate) fn draw(
             }
             response.on_hover_text(message);
         } else {
-            frame.action = compact_content(
-                root,
-                clock_rect,
-                corners,
-                store,
-                &options,
-                state.ai_caption.as_deref(),
-                playing,
-            );
+            frame.action = compact_content(root, clock_rect, corners, store, &options, playing)
+                .or(frame.action);
         }
-        if let Some(text) = weather {
-            let strip = Rect::from_min_max(
-                pos2(weather_start, rect.top()),
-                pos2(metrics_start, rect.bottom()),
-            );
+        if let Some(strip) = slots[Resident::Weather as usize]
+            && let Some(text) = &state.weather_caption
+        {
             let response = root.interact(strip, Id::new("compact-weather"), egui::Sense::click());
             root.painter().with_clip_rect(strip).text(
                 strip.center(),
@@ -351,8 +355,7 @@ pub(crate) fn draw(
                 frame.action = Some(ShellAction::OpenWorkbench(Page::Weather));
             }
         }
-        if show_metrics {
-            let strip = Rect::from_min_max(pos2(metrics_start, rect.top()), rect.max);
+        if let Some(strip) = slots[Resident::Metrics as usize] {
             let response = root.interact(
                 strip,
                 Id::new("capsule-device-metrics"),
@@ -382,7 +385,7 @@ pub(crate) fn draw(
                 frame.action = Some(ShellAction::OpenWorkbench(Page::Performance));
             }
         }
-        if let Some(badge) = badge {
+        if let Some(badge) = slots[Resident::Alerts as usize] {
             let scale = options.scale;
             let center = badge.center();
             let alert = root.interact(badge, Id::new("capsule-app-alert"), egui::Sense::click());
@@ -433,13 +436,31 @@ fn shape_rect(available: Rect, options: &CapsuleOptions<'_>, progress: f32) -> R
     )
 }
 
+fn draw_companion(
+    ui: &Ui,
+    store: &Store,
+    center: Pos2,
+    scale: f32,
+    playing: bool,
+    reduce_motion: bool,
+) {
+    let now = Local::now().timestamp_millis();
+    let drinking = store
+        .state()
+        .notifications
+        .iter()
+        .rev()
+        .take(6)
+        .any(|n| (0..60_000).contains(&(now - n.at)) && n.title.contains("饮水"));
+    companion::draw(ui, center, scale, playing, drinking, reduce_motion);
+}
+
 fn compact_content(
     ui: &mut Ui,
     rect: Rect,
     radius: egui::CornerRadius,
     store: &Store,
     options: &CapsuleOptions<'_>,
-    ai_caption: Option<&str>,
     playing: bool,
 ) -> Option<ShellAction> {
     let tone = Palette::from_ui(ui);
@@ -472,20 +493,10 @@ fn compact_content(
     let s = options.scale;
     let painter = ui.painter().with_clip_rect(rect);
     let mut rect = rect;
-    if store.state().settings.dock.companion && !options.minimal {
-        let center = if options.dock.is_horizontal() {
-            let center = pos2(rect.left() + 16.0 * s, rect.center().y);
-            rect.min.x += 24.0 * s;
-            center
-        } else {
-            let center = pos2(rect.center().x, rect.bottom() - 15.0 * s);
-            rect.max.y -= 24.0 * s;
-            center
-        };
-        let drinking = store.state().notifications.iter().rev().take(6).any(|n| {
-            (0..60_000).contains(&(now.timestamp_millis() - n.at)) && n.title.contains("饮水")
-        });
-        companion::draw(ui, center, s, playing, drinking, options.reduce_motion);
+    if store.state().settings.dock.companion && !options.minimal && !options.dock.is_horizontal() {
+        let center = pos2(rect.center().x, rect.bottom() - 15.0 * s);
+        rect.max.y -= 24.0 * s;
+        draw_companion(ui, store, center, s, playing, options.reduce_motion);
     }
 
     if options.minimal {
@@ -506,15 +517,22 @@ fn compact_content(
     } else if options.dock.is_horizontal() && !running && options.lyrics.is_none() {
         let inset = 10.0 * s;
         let y = rect.center().y;
-        painter.text(
-            pos2(rect.left() + inset, y),
-            Align2::LEFT_CENTER,
-            ai_caption
-                .map(str::to_owned)
-                .unwrap_or_else(|| now.format("%-m/%-d").to_string()),
-            FontId::proportional(12.0 * s),
-            tone.caption,
-        );
+        let font = FontId::monospace(13.0 * s);
+        let measured = painter
+            .layout_no_wrap(time.clone(), font.clone(), tone.ink)
+            .size()
+            .x;
+        let room = rect.width() - 2. * inset - measured - 5. * s;
+        if room >= 20. * s {
+            truncated_text(
+                ui,
+                &now.format("%-m/%-d").to_string(),
+                pos2(rect.left() + inset, y),
+                room,
+                12. * s,
+                tone.caption,
+            );
+        }
         painter.text(
             pos2(rect.right() - inset, y),
             Align2::RIGHT_CENTER,
@@ -1474,14 +1492,23 @@ mod tests {
                 workspace.settings.open_on_hover = true;
                 workspace.settings.capsule_device_metrics = true;
                 workspace.settings.dock.companion = true;
+                workspace.settings.dock.resident_order = [
+                    Resident::Weather,
+                    Resident::Clock,
+                    Resident::Ai,
+                    Resident::Metrics,
+                    Resident::Companion,
+                    Resident::Alerts,
+                ];
                 Ok(())
             })
             .unwrap();
         let dock = &store.state().settings.dock;
-        let size = compact_with_weather(compact_size(&store, dock, None), dock, true, false);
+        let size = compact_with_weather(compact_size(&store, dock, None), dock, true, true);
         let screen = Rect::from_min_size(Pos2::ZERO, size);
         let mut state = CapsuleState {
             alert_count: 2,
+            ai_caption: Some(format!("DeepSeek 余额 {}", "9876543210".repeat(15))),
             weather_caption: Some("22°".into()),
             ..Default::default()
         };
@@ -1489,7 +1516,7 @@ mod tests {
         let mut media = crate::music::Media::new(ctx.clone());
         let mut render = |events| {
             let mut action = None;
-            let _ = ctx.run_ui(
+            let output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(screen),
                     events,
@@ -1521,6 +1548,12 @@ mod tests {
                     .action;
                 },
             );
+            let ai = ctx.read_response(Id::new("compact-ai")).unwrap().rect;
+            let clock = ctx.read_response(Id::new("capsule-compact")).unwrap().rect;
+            let weather = ctx.read_response(Id::new("compact-weather")).unwrap().rect;
+            assert!(weather.right() <= clock.left() && clock.right() <= ai.left());
+            let long = output.shapes.iter().find(|item| matches!(&item.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with("DeepSeek"))).unwrap();
+            assert!(!long.clip_rect.intersect(clock).is_positive());
             action
         };
         render(vec![]);

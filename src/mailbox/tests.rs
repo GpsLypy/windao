@@ -219,3 +219,32 @@ fn server_changes_require_opt_in_and_valid_uids() {
     );
     assert!(fixture(Query::Change(Change::Move(key)), 0).is_err());
 }
+
+#[test]
+fn html_mail_is_inert_text_with_only_explicit_web_links() {
+    let letter=decode(br#"Content-Type: text/html; charset=utf-8
+
+<html><head><title>hidden</title></head><body><p>Hello &amp; welcome</p><img src="https://outside.invalid/pixel"><script>hidden</script><div hidden>hidden</div><a href="https://example.invalid/details">Details</a><a href="javascript:hidden()">Invalid</a></body></html>"#).unwrap();
+    assert!(letter.text.contains("Hello & welcome"));
+    assert!(!letter.text.contains("hidden"));
+    assert_eq!(letter.links, ["https://example.invalid/details"]);
+}
+
+#[test]
+fn verification_action_requires_an_unambiguous_explicitly_opened_message() {
+    let mail = |subject: &str, body: &str| {
+        decode(format!("Subject: {subject}\r\n\r\n{body}").as_bytes()).unwrap()
+    };
+    assert_eq!(
+        displayed_code(&mail("Verification code 123456", "One-time code 123456")),
+        Some("123456")
+    );
+    assert!(displayed_code(&mail("Receipt 123456", "Total 99")).is_none());
+    assert!(
+        displayed_code(&mail(
+            "Verification code 123456",
+            "Verification code 654321"
+        ))
+        .is_none()
+    );
+}

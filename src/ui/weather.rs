@@ -27,6 +27,12 @@ struct City {
 }
 
 impl City {
+    fn valid(&self) -> bool {
+        !self.name.trim().is_empty()
+            && (-90.0..=90.0).contains(&self.latitude)
+            && (-180.0..=180.0).contains(&self.longitude)
+    }
+
     fn label(&self) -> String {
         let mut parts = vec![self.name.as_str()];
         for part in [self.admin1.as_deref(), self.country.as_deref()]
@@ -140,6 +146,59 @@ impl CachedForecast {
     }
 }
 
+fn interval(qweather: bool) -> i64 {
+    if qweather { 3600 } else { 900 }
+}
+
+fn retry_delay(error: &str) -> i64 {
+    if error.contains("429") {
+        900
+    } else if error.contains("月请求上限") {
+        3600
+    } else {
+        120
+    }
+}
+
+const MANUAL_COOLDOWN: i64 = 30;
+
+fn cache_path(
+    directory: &Path,
+    kind: &str,
+    source: &str,
+    latitude: f64,
+    longitude: f64,
+) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("{source}/{latitude}/{longitude}").as_bytes());
+    directory.join(format!("weather-{kind}-{digest:x}.json"))
+}
+
+fn prune(directory: &Path, kind: &str) {
+    let prefix = format!("weather-{kind}-");
+    let Ok(entries) = directory.read_dir() else {
+        return;
+    };
+    let mut paths: Vec<_> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let key = name
+                .to_str()?
+                .strip_prefix(&prefix)?
+                .strip_suffix(".json")?;
+            if key.len() != 64 || !key.bytes().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            Some((entry.metadata().ok()?.modified().ok()?, entry.path()))
+        })
+        .collect();
+    paths.sort_unstable_by(|a, b| b.cmp(a));
+    for (_, path) in paths.into_iter().skip(32) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[cfg(windows)]
 #[derive(Default)]
 pub(super) struct Weather {
@@ -151,6 +210,10 @@ pub(super) struct Weather {
     query: String,
     loaded: bool,
     refresh_at: i64,
+    forecast_pending: bool,
+    active: Option<std::path::PathBuf>,
+    retry: std::collections::HashMap<std::path::PathBuf, i64>,
+    results_query: Option<String>,
     fetched_at: Option<i64>,
     cities: Option<Vec<City>>,
     selected: Option<usize>,
@@ -161,7 +224,7 @@ pub(super) struct Weather {
 
 #[cfg(windows)]
 enum Reply {
-    Cities(Vec<City>),
+    Cities(Vec<City>, String),
     Located(City),
     Report(Box<Report>),
 }
@@ -169,10 +232,15 @@ enum Reply {
 #[cfg(windows)]
 impl Weather {
     pub(super) fn caption(&self) -> Option<String> {
-        self.prefs
-            .resident
-            .then_some(self.report.as_ref()?.current.temperature_2m?)
-            .map(|v| format!("{v:.0}°"))
+        if !self.prefs.resident {
+            return None;
+        }
+        let current = &self.report.as_ref()?.current;
+        Some(format!(
+            "{} {:.0}°",
+            weather_icon(current),
+            current.temperature_2m?
+        ))
     }
     pub(super) fn tick(&mut self, ctx: &eframe::egui::Context, directory: &Path, visible: bool) {
         let path = directory.join("weather-cache.json");
@@ -183,21 +251,40 @@ impl Weather {
             self.usage = provider::Usage::current(directory).map_or(0, |u| u.calls);
             self.prefs = provider::Preferences::load(directory);
             self.host = self.prefs.host.clone();
-            if let Some(cache) = CachedForecast::load(&path) {
-                self.query = cache.city.name.clone();
-                self.cities = Some(vec![cache.city]);
-                self.selected = Some(0);
-                self.report = Some(cache.report);
-                self.fetched_at = Some(cache.fetched_at);
-                self.refresh_at = cache.fetched_at.min(now).saturating_add(900);
+            let legacy = CachedForecast::load(&path);
+            if let Some(city) = self
+                .prefs
+                .city
+                .clone()
+                .filter(City::valid)
+                .or_else(|| legacy.as_ref().map(|v| v.city.clone()))
+            {
+                if let Some(old) = legacy
+                    && !old.report.qweather
+                {
+                    let dest = cache_path(
+                        directory,
+                        "reading",
+                        "open-meteo",
+                        old.city.latitude,
+                        old.city.longitude,
+                    );
+                    if !dest.exists() {
+                        let _ = CachedForecast::save(&dest, &old.city, &old.report, old.fetched_at);
+                    }
+                }
+                self.query = city.name.clone();
+                self.cities = Some(vec![city]);
+                self.activate(0, now);
             }
         }
-        self.poll(&path, now);
+        self.poll(ctx, now);
         if !visible && !self.prefs.resident {
             return;
         }
         if let Some(index) = self.selected
             && self.request.is_none()
+            && !self.prefs.pause_refresh
         {
             if now >= self.refresh_at {
                 self.forecast(ctx, index);
@@ -216,6 +303,11 @@ impl Weather {
             .checkbox(&mut self.prefs.resident, "在折叠胶囊显示温度")
             .changed()
         {
+            self.error = self.prefs.save(directory).err();
+        }
+        let mut automatic = !self.prefs.pause_refresh;
+        if ui.checkbox(&mut automatic, "自动刷新天气").changed() {
+            self.prefs.pause_refresh = !automatic;
             self.error = self.prefs.save(directory).err();
         }
         ui.collapsing("天气来源与收藏城市", |ui| {
@@ -270,8 +362,7 @@ impl Weather {
                                 self.prefs.host = host;
                                 self.prefs.encrypted_key = key;
                                 self.prefs.enabled = true;
-                                self.request = None;
-                                self.refresh_at = 0;
+                                self.switch_source(ui.ctx(), now);
                                 self.error = self.prefs.save(directory).err();
                             }
                             Err(_) => self.error = Some("Windows 无法保存天气密钥。".into()),
@@ -280,8 +371,7 @@ impl Weather {
                 }
                 if ui.button("使用 Open-Meteo").clicked() {
                     self.prefs.enabled = false;
-                    self.request = None;
-                    self.refresh_at = 0;
+                    self.switch_source(ui.ctx(), now);
                     self.error = self.prefs.save(directory).err();
                 }
             });
@@ -316,7 +406,7 @@ impl Weather {
             if let Some(city) = pick {
                 self.cities = Some(vec![city]);
                 self.selected = None;
-                self.forecast(ui.ctx(), 0);
+                self.select_city(ui.ctx(), 0, now);
             }
         });
         card(ui, |ui| {
@@ -324,37 +414,51 @@ impl Weather {
             let pending = self.request.is_some();
             let has_query = !self.query.trim().is_empty();
             let enter = input.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            let confirm = enter
+                && self.results_query.as_deref() == Some(self.query.trim())
+                && self.cities.as_ref().is_some_and(|v| !v.is_empty());
+            if confirm && !pending {
+                self.select_city(ui.ctx(), 0, now);
+            }
             ui.horizontal_wrapped(|ui| {
                 if ui
                     .add_enabled_ui(!pending && has_query, |ui| primary(ui, "搜索城市"))
                     .inner
                     .clicked()
-                    || (enter && !pending && has_query)
+                    || (enter && !confirm && !pending && has_query)
                 {
+                    self.forecast_pending = false;
+                    self.results_query = None;
+                    input.request_focus();
                     let mut url = Url::parse(GEOCODING).expect("fixed geocoding URL");
                     url.query_pairs_mut()
                         .append_pair("name", self.query.trim())
                         .append_pair("count", "8")
                         .append_pair("language", "zh")
                         .append_pair("format", "json");
+                    let query = self.query.trim().to_owned();
                     self.start(ui.ctx(), move || {
-                        parse_cities(&get(&url)?).map(Reply::Cities)
+                        parse_cities(&get(&url)?).map(|cities| Reply::Cities(cities, query))
                     });
                 }
                 if ui
                     .add_enabled(!pending, Button::new("按网络位置定位"))
-                    .on_hover_text("通过 ipwho.is 查询当前网络所在城市")
+                    .on_hover_text("通过 ipwho.is 查询，失败时使用 FreeIPAPI")
                     .clicked()
                 {
+                    self.forecast_pending = false;
                     self.start(ui.ctx(), || {
-                        let url =
-                            Url::parse("https://ipwho.is/?lang=zh-CN").expect("fixed location URL");
-                        let (status, body) = crate::calendar_sync::get_json(&url)
-                            .map_err(|_| "无法连接定位服务。")?;
-                        if status != 200 {
-                            return Err(format!("定位服务返回 HTTP {status}。"));
-                        }
-                        provider::location(&body).map(Reply::Located)
+                        provider::locate_with(|address| {
+                            let url = Url::parse(address).expect("fixed location URL");
+                            let (status, body) = crate::calendar_sync::get_json(&url)
+                                .map_err(|_| "无法连接定位服务。")?;
+                            if status == 200 {
+                                Ok(body)
+                            } else {
+                                Err(format!("HTTP {status}"))
+                            }
+                        })
+                        .map(Reply::Located)
                     });
                 }
                 if ui
@@ -401,7 +505,7 @@ impl Weather {
                 }
             }
             if let Some(index) = chosen {
-                self.forecast(ui.ctx(), index);
+                self.select_city(ui.ctx(), index, now);
             }
         });
         if let Some(report) = &self.report {
@@ -411,7 +515,7 @@ impl Weather {
                     [self.selected.expect("selected city")];
                 subhead(ui, &city.label());
                 if let Some(at) = self.fetched_at
-                    && (now.saturating_sub(at) >= 900 || self.error.is_some())
+                    && (now.saturating_sub(at) >= interval(report.qweather) || self.error.is_some())
                 {
                     ui.colored_label(
                         ui.visuals().warn_fg_color,
@@ -485,13 +589,63 @@ impl Weather {
         }
     }
 
+    fn activate(&mut self, index: usize, now: i64) {
+        let city = self.cities.as_ref().unwrap()[index].clone();
+        let source = if self.prefs.enabled {
+            self.prefs.host.as_str()
+        } else {
+            "open-meteo"
+        };
+        let path = cache_path(
+            &self.directory,
+            "reading",
+            source,
+            city.latitude,
+            city.longitude,
+        );
+        self.selected = Some(index);
+        self.prefs.city = Some(city);
+        if self.active.as_ref() != Some(&path) {
+            self.request = None;
+            self.error = None;
+            let cached = CachedForecast::load(&path)
+                .filter(|cache| cache.report.qweather == self.prefs.enabled);
+            self.fetched_at = cached.as_ref().map(|v| v.fetched_at);
+            self.refresh_at = self
+                .fetched_at
+                .map_or(0, |v| {
+                    v.min(now).saturating_add(interval(self.prefs.enabled))
+                })
+                .max(*self.retry.get(&path).unwrap_or(&0));
+            self.report = cached.map(|v| v.report);
+            self.active = Some(path);
+        }
+    }
+    fn select_city(&mut self, ctx: &eframe::egui::Context, index: usize, now: i64) {
+        self.activate(index, now);
+        self.results_query = None;
+        self.error = self.prefs.save(&self.directory).err();
+        if now >= self.refresh_at {
+            self.forecast(ctx, index);
+        }
+    }
+    fn switch_source(&mut self, ctx: &eframe::egui::Context, now: i64) {
+        if let Some(index) = self.selected {
+            self.select_city(ctx, index, now);
+        }
+    }
     fn forecast(&mut self, ctx: &eframe::egui::Context, index: usize) {
         let city = &self.cities.as_ref().expect("forecast city")[index];
-        if self.selected != Some(index) {
-            self.report = None;
+        let path = self.active.clone().expect("active weather cache");
+        let now = chrono::Utc::now().timestamp();
+        if let Some(wait) = self.retry.get(&path).filter(|until| **until > now) {
+            self.error = Some(format!("请在 {} 秒后刷新。", wait - now));
+            return;
         }
-        self.selected = Some(index);
-        self.refresh_at = chrono::Utc::now().timestamp() + 120;
+        self.retry.retain(|_, until| *until > now);
+        self.retry.insert(path, now + MANUAL_COOLDOWN);
+        self.forecast_pending = true;
+        self.refresh_at = now + 120;
         if self.prefs.enabled {
             let host = self.prefs.host.clone();
             let encrypted = self.prefs.encrypted_key.clone();
@@ -544,7 +698,7 @@ impl Weather {
         }
     }
 
-    fn poll(&mut self, path: &Path, now: i64) {
+    fn poll(&mut self, ctx: &eframe::egui::Context, now: i64) {
         let Some(request) = &self.request else {
             return;
         };
@@ -555,16 +709,16 @@ impl Weather {
         };
         self.request = None;
         self.usage = provider::Usage::current(&self.directory).map_or(self.usage, |u| u.calls);
-        self.refresh_at = now + 120;
         match result {
             Ok(Reply::Located(city)) => {
                 self.query = city.name.clone();
                 self.cities = Some(vec![city]);
-                self.report = None;
-                self.selected = Some(0);
-                self.refresh_at = 0;
+                self.select_city(ctx, 0, now);
             }
-            Ok(Reply::Cities(cities)) => {
+            Ok(Reply::Cities(cities, query)) => {
+                self.results_query = Some(query);
+                self.active = None;
+                self.fetched_at = None;
                 self.cities = Some(cities);
                 self.selected = None;
                 self.report = None;
@@ -574,19 +728,22 @@ impl Weather {
                     .cities
                     .as_ref()
                     .and_then(|cities| cities.get(self.selected?))
+                    && let Some(path) = self.active.as_ref()
                     && CachedForecast::save(path, city, &report, now).is_err()
                 {
                     self.error = Some("天气已更新，本机缓存写入失败。".into());
                 }
                 self.fetched_at = Some(now);
-                self.refresh_at = now + 900;
+                prune(&self.directory, "reading");
+                self.refresh_at = now + interval(report.qweather);
                 self.report = Some(*report);
             }
             Err(error) => {
-                if error.contains("429") {
-                    self.refresh_at = now + 900;
-                } else if error.contains("月请求上限") {
-                    self.refresh_at = now + 3600;
+                if self.forecast_pending
+                    && let Some(path) = &self.active
+                {
+                    self.refresh_at = now + retry_delay(&error);
+                    self.retry.insert(path.clone(), self.refresh_at);
                 }
                 self.error = Some(error);
             }
@@ -625,6 +782,24 @@ fn egui_table(ui: &mut Ui, daily: &Daily) {
                 ui.end_row();
             }
         });
+}
+
+fn weather_icon(reading: &Conditions) -> &'static str {
+    let text = reading.description.as_deref().unwrap_or_default();
+    match reading.weather_code {
+        Some(95..=99) => "ϟ",
+        Some(71..=77 | 85..=86) => "❄",
+        Some(51..=67 | 80..=82) => "☂",
+        Some(45..=48) => "≋",
+        Some(1..=3) => "☁",
+        Some(0) => "☀",
+        _ if text.contains('雷') => "ϟ",
+        _ if text.contains('雪') => "❄",
+        _ if text.contains('雨') => "☂",
+        _ if text.contains('雾') || text.contains('霾') => "≋",
+        _ if text.contains('晴') => "☀",
+        _ => "☁",
+    }
 }
 
 #[cfg(windows)]
@@ -695,6 +870,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn refresh_deadlines_and_cache_keys_follow_the_selected_city_and_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let city = |source, lat| cache_path(dir.path(), "reading", source, lat, 121.0);
+        let first = city("open-meteo", 31.0);
+        let second = city("open-meteo", 32.0);
+        let qweather = city("one.qweatherapi.com", 31.0);
+        assert_ne!(qweather, city("two.qweatherapi.com", 31.0));
+        assert_eq!((interval(false), interval(true)), (900, 3600));
+        let mut deadlines = std::collections::HashMap::new();
+        deadlines.insert(first.clone(), 100 + MANUAL_COOLDOWN);
+        deadlines.insert(qweather.clone(), 100 + retry_delay("offline"));
+        assert_eq!(deadlines.get(&second), None);
+        assert_eq!(deadlines[&first], 130);
+        assert_eq!(deadlines[&qweather], 220);
+        for i in 0..36 {
+            std::fs::write(city("open-meteo", i as f64), b"forecast").unwrap();
+        }
+        prune(dir.path(), "reading");
+        assert_eq!(dir.path().read_dir().unwrap().count(), 32);
+    }
+
+    #[test]
     fn accepts_same_name_cities_and_empty_search() {
         let cities = parse_cities(r#"{"results":[{"name":"北京","admin1":"北京市","country":"中国","latitude":39.9,"longitude":116.4},{"name":"北京","admin1":"重庆市","country":"中国","latitude":30.7,"longitude":108.6}]}"#).unwrap();
         assert_eq!(cities[0].label(), "北京 · 北京市 · 中国");
@@ -719,6 +916,7 @@ mod tests {
             "daily": {"time": days, "sunrise": ["2026-11-21T06:27",null], "sunset": ["2026-11-21T17:16"], "weather_code": [0, 1, 2, null, 3, 45, 55], "temperature_2m_min": vec![3; 7], "temperature_2m_max": vec![10; 7], "precipitation_probability_max": vec![12; 7]}
         });
         let report = parse_report(&response.to_string()).unwrap();
+        assert_eq!(weather_icon(&report.current), "☀");
         assert_eq!(report.timezone, "Asia/Shanghai");
         assert_eq!(report.current.time.to_string(), "2026-11-21 02:30:00");
         assert_eq!(report.current.temperature_2m, Some(8.0));

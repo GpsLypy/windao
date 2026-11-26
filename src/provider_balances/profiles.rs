@@ -17,10 +17,14 @@ pub(crate) struct Profile {
     #[serde(default)]
     pub balance_field: String,
     #[serde(default)]
+    pub relay_user: Option<u64>,
+    #[serde(default)]
     pub unit: String,
     pub report: Option<Reading>,
     pub observed: Option<i64>,
     pub file: Option<PathBuf>,
+    #[serde(default)]
+    pub organization: Option<String>,
 }
 #[derive(Default, Serialize, Deserialize, Clone)]
 pub(crate) struct Profiles {
@@ -91,10 +95,12 @@ impl Profiles {
             color,
             endpoint,
             balance_field: String::new(),
+            relay_user: None,
             unit: String::new(),
             report: None,
             observed: None,
             file: None,
+            organization: None,
         });
         Ok(id)
     }

@@ -17,6 +17,9 @@ mod music;
 #[cfg(all(test, not(windows)))]
 #[path = "music/lyrics.rs"]
 mod music_lyrics_tests;
+#[cfg(all(test, not(windows)))]
+#[path = "music/player_window.rs"]
+mod music_player_window_tests;
 #[cfg(any(windows, test))]
 mod provider_balances;
 #[cfg(any(windows, test))]

@@ -310,4 +310,28 @@ mod tests {
         assert!(state.entries.front().unwrap().pinned);
         assert!(!state.capture("keep".into()));
     }
+    #[test]
+    fn reopens_encrypted_history_and_persists_clearing_and_disabling() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut history = History {
+            recording: true,
+            ..History::default()
+        };
+        history.capture("clipboard-test-synthetic".into());
+        history.entries[0].pinned = true;
+        let mut first = ClipboardHistory::default();
+        first.save(dir.path(), history);
+        assert!(first.error.is_none());
+        let protected = fs::read(dir.path().join(FILE)).unwrap();
+        assert!(!protected.windows(9).any(|s| s == b"synthetic"));
+        let mut next = ClipboardHistory::default();
+        next.load(dir.path());
+        assert!(next.error.is_none() && next.state.recording);
+        assert!(next.state.entries[0].pinned);
+        assert_eq!(next.state.entries[0].text, "clipboard-test-synthetic");
+        next.save(dir.path(), History::default());
+        let mut last = ClipboardHistory::default();
+        last.load(dir.path());
+        assert!(last.error.is_none() && !last.state.recording && last.state.entries.is_empty());
+    }
 }

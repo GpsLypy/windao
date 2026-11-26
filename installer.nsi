@@ -2,9 +2,18 @@ Unicode true
 !include "MUI2.nsh"
 !include "x64.nsh"
 !include "FileFunc.nsh"
+!include "nsDialogs.nsh"
+!include "Win\COM.nsh"
 
 Var UpdateMode
 Var InstallerMutex
+Var PreviousLocation
+Var DesktopChoice
+Var LoginChoice
+Var DesktopCheckbox
+Var LoginCheckbox
+Var LinkFile
+Var LinkTarget
 
 !define PRODUCT "NotchCalendar"
 !define APP_EXE "NotchCalendar.exe"
@@ -22,6 +31,9 @@ SetCompressor /SOLID lzma
 
 !define MUI_ICON "icon.ico"
 !define MUI_UNICON "icon.ico"
+!define MUI_PAGE_CUSTOMFUNCTION_PRE DirectoryPre
+!insertmacro MUI_PAGE_DIRECTORY
+Page custom OptionsPage OptionsLeave
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -58,6 +70,71 @@ VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "LegalCopyright" ""
   StrCpy $InstallerMutex $0
 !macroend
 
+!macro ReadLink PREFIX
+Function ${PREFIX}ReadLink
+  StrCpy $LinkTarget ""
+  IfFileExists "$LinkFile" 0 link_done
+  !insertmacro ComHlpr_CreateInProcInstance ${CLSID_ShellLink} ${IID_IShellLink} r5 ".r8"
+  ${If} $8 == 0
+    ${IUnknown::QueryInterface} $5 '("${IID_IPersistFile}",.r6).r8'
+    ${If} $8 == 0
+      ${IPersistFile::Load} $6 '("$LinkFile",0).r8'
+      ${If} $8 == 0
+        ${IShellLink::GetPath} $5 '(.r7,${NSIS_MAX_STRLEN},0,4).r8'
+        ${If} $8 == 0
+          StrCpy $LinkTarget $7
+        ${EndIf}
+      ${EndIf}
+      ${IUnknown::Release} $6 ""
+    ${EndIf}
+    ${IUnknown::Release} $5 ""
+  ${EndIf}
+  link_done:
+FunctionEnd
+!macroend
+!insertmacro ReadLink ""
+!insertmacro ReadLink "un."
+
+!macro ManageShortcut PREFIX LINK CHOICE
+  StrCpy $LinkFile "${LINK}"
+  Call ${PREFIX}ReadLink
+  ${If} $LinkTarget == "$INSTDIR\${APP_EXE}"
+  ${OrIf} $LinkTarget == "$INSTDIR\${LEGACY_EXE}"
+    Delete "$LinkFile"
+  ${EndIf}
+  ${If} "${CHOICE}" == "1"
+  ${AndIfNot} ${FileExists} "$LinkFile"
+    CreateShortCut "$LinkFile" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\icon.ico"
+  ${EndIf}
+!macroend
+
+Function DirectoryPre
+  ${If} $PreviousLocation != ""
+    Abort
+  ${EndIf}
+FunctionEnd
+
+Function OptionsPage
+  !insertmacro MUI_HEADER_TEXT "安装选项" "选择桌面入口和登录时的行为。"
+  nsDialogs::Create 1018
+  Pop $0
+  ${If} $0 == error
+    Abort
+  ${EndIf}
+  ${NSD_CreateCheckbox} 0 8u 100% 12u "创建桌面快捷方式"
+  Pop $DesktopCheckbox
+  ${NSD_SetState} $DesktopCheckbox $DesktopChoice
+  ${NSD_CreateCheckbox} 0 30u 100% 12u "登录 Windows 时启动"
+  Pop $LoginCheckbox
+  ${NSD_SetState} $LoginCheckbox $LoginChoice
+  nsDialogs::Show
+FunctionEnd
+
+Function OptionsLeave
+  ${NSD_GetState} $DesktopCheckbox $DesktopChoice
+  ${NSD_GetState} $LoginCheckbox $LoginChoice
+FunctionEnd
+
 Function .onInit
   ${IfNot} ${IsNativeAMD64}
     MessageBox MB_OK|MB_ICONSTOP "此版本需要 x64 Windows。" /SD IDOK
@@ -76,11 +153,26 @@ Function .onInit
   ${GetOptions} $0 "/UPDATE" $1
   ${IfNot} ${Errors}
     StrCpy $UpdateMode "1"
+    SetSilent silent
     SetAutoClose true
-    SetRegView 64
-    ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "InstallLocation"
-    ${If} $0 != ""
-      StrCpy $INSTDIR $0
+  ${EndIf}
+  SetShellVarContext current
+  ReadRegStr $PreviousLocation HKCU "${UNINSTALL_KEY}" "InstallLocation"
+  StrCpy $DesktopChoice "1"
+  StrCpy $LoginChoice "0"
+  ${If} $PreviousLocation != ""
+    StrCpy $INSTDIR $PreviousLocation
+    StrCpy $DesktopChoice "0"
+    StrCpy $LinkFile "$DESKTOP\${PRODUCT}.lnk"
+    Call ReadLink
+    ${If} $LinkTarget == "$INSTDIR\${APP_EXE}"
+    ${OrIf} $LinkTarget == "$INSTDIR\${LEGACY_EXE}"
+      StrCpy $DesktopChoice "1"
+    ${EndIf}
+    ReadRegStr $0 HKCU "${RUN_KEY}" "${LEGACY_PRODUCT}"
+    ${If} $0 == '"$INSTDIR\${APP_EXE}"'
+    ${OrIf} $0 == '"$INSTDIR\${LEGACY_EXE}"'
+      StrCpy $LoginChoice "1"
     ${EndIf}
   ${EndIf}
   !insertmacro LockInstallation
@@ -96,6 +188,18 @@ FunctionEnd
 Section "安装"
   SetShellVarContext current
   SetRegView 64
+  ${If} $PreviousLocation == ""
+    ${If} ${FileExists} "$INSTDIR\${APP_EXE}"
+    ${OrIf} ${FileExists} "$INSTDIR\Uninstall.exe"
+    ${OrIf} ${FileExists} "$INSTDIR\icon.ico"
+    ${OrIf} ${FileExists} "$INSTDIR\LICENSE.txt"
+    ${OrIf} ${FileExists} "$INSTDIR\OFL-NotoSansSC.txt"
+    ${OrIf} ${FileExists} "$INSTDIR\THIRD_PARTY_NOTICES.txt"
+      MessageBox MB_OK|MB_ICONSTOP "该目录已有同名文件，请选择其他安装目录。" /SD IDOK
+      SetErrorLevel 1
+      Abort
+    ${EndIf}
+  ${EndIf}
   SetOutPath "$INSTDIR"
   File "${APP_EXE}"
   File "icon.ico"
@@ -103,7 +207,18 @@ Section "安装"
   File "LICENSE.txt"
   File "THIRD_PARTY_NOTICES.txt"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
-  CreateShortCut "$SMPROGRAMS\${PRODUCT}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\icon.ico"
+  !insertmacro ManageShortcut "" "$SMPROGRAMS\${PRODUCT}.lnk" "1"
+  !insertmacro ManageShortcut "" "$DESKTOP\${PRODUCT}.lnk" "$DesktopChoice"
+  ReadRegStr $0 HKCU "${RUN_KEY}" "${LEGACY_PRODUCT}"
+  ${If} $0 == '"$INSTDIR\${APP_EXE}"'
+  ${OrIf} $0 == '"$INSTDIR\${LEGACY_EXE}"'
+    DeleteRegValue HKCU "${RUN_KEY}" "${LEGACY_PRODUCT}"
+    StrCpy $0 ""
+  ${EndIf}
+  ${If} $LoginChoice == "1"
+  ${AndIf} $0 == ""
+    WriteRegStr HKCU "${RUN_KEY}" "${LEGACY_PRODUCT}" '"$INSTDIR\${APP_EXE}"'
+  ${EndIf}
   ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "InstallLocation"
   ${If} $0 == $INSTDIR
     IfFileExists "$INSTDIR\${LEGACY_EXE}" 0 legacy_exe_removed
@@ -115,11 +230,7 @@ Section "安装"
       Abort
     ${EndIf}
     legacy_exe_removed:
-    Delete "$SMPROGRAMS\${LEGACY_PRODUCT}.lnk"
-    ReadRegStr $0 HKCU "${RUN_KEY}" "${LEGACY_PRODUCT}"
-    ${If} $0 == '$\"$INSTDIR\${LEGACY_EXE}$\"'
-      WriteRegStr HKCU "${RUN_KEY}" "${LEGACY_PRODUCT}" '$\"$INSTDIR\${APP_EXE}$\"'
-    ${EndIf}
+    !insertmacro ManageShortcut "" "$SMPROGRAMS\${LEGACY_PRODUCT}.lnk" "0"
   ${EndIf}
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${PRODUCT_VERSION}"
@@ -148,12 +259,16 @@ Section "Uninstall"
   ${If} $0 == '$\"$INSTDIR\${APP_EXE}$\"'
     DeleteRegValue HKCU "${RUN_KEY}" "${LEGACY_PRODUCT}"
   ${EndIf}
-  Delete "$SMPROGRAMS\${PRODUCT}.lnk"
+  !insertmacro ManageShortcut "un." "$SMPROGRAMS\${PRODUCT}.lnk" "0"
+  !insertmacro ManageShortcut "un." "$DESKTOP\${PRODUCT}.lnk" "0"
   Delete "$INSTDIR\icon.ico"
   Delete "$INSTDIR\OFL-NotoSansSC.txt"
   Delete "$INSTDIR\LICENSE.txt"
   Delete "$INSTDIR\THIRD_PARTY_NOTICES.txt"
   Delete "$INSTDIR\Uninstall.exe"
-  DeleteRegKey HKCU "${UNINSTALL_KEY}"
+  ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "InstallLocation"
+  ${If} $0 == "$INSTDIR"
+    DeleteRegKey HKCU "${UNINSTALL_KEY}"
+  ${EndIf}
   RMDir "$INSTDIR"
 SectionEnd

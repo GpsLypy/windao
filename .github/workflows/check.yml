@@ -14,16 +14,30 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup update stable
       - run: cargo +stable fmt --check
+      - run: node --test tests/quota-share.test.cjs
       - run: cargo +stable test --locked
       - run: cargo +stable clippy --locked --all-targets -- -D warnings
       - name: Validate unsigned MSIX with the Windows SDK
         shell: pwsh
         run: |
-          cargo +stable build --locked
+          cargo +stable build --locked --release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $sdk = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Directory |
             Where-Object { Test-Path "$($_.FullName)\x64\makeappx.exe" } |
             Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
           if (!$sdk) { throw "Windows SDK MakeAppx.exe not found" }
           $env:PATH = "$($sdk.FullName)\x64;$env:PATH"
-          ./build-msix.ps1 -Executable ./target/debug/windao.exe -Publisher "CN=Windows checks"
+          ./build-msix.ps1 -Executable ./target/release/windao.exe -Publisher "CN=NotchCalendar Test" -UnsignedTest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Windows-11-UnsignedTest-MSIX
+          path: |
+            release/*-UnsignedTest.msix
+            release/Windows-11-UnsignedTest.txt
+          if-no-files-found: error
+          retention-days: 7
+      - name: Check silent setup, upgrade and uninstall
+        env:
+          WINDAO_RUNNER_KIND: ${{ runner.environment }}
+        shell: pwsh
+        run: ./.github/workflows/test-installer.ps1

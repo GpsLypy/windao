@@ -1,3 +1,4 @@
+mod html;
 use imap::{Client, Session};
 use mailparse::{MailHeaderMap, ParsedMail};
 use serde::{Deserialize, Serialize};
@@ -44,6 +45,7 @@ pub struct Summary {
 }
 pub struct Letter {
     pub subject: String,
+    pub links: Vec<String>,
     pub text: String,
     pub invites: Vec<Vec<u8>>,
 }
@@ -383,6 +385,25 @@ fn preview(text: &str) -> String {
     output
 }
 
+pub fn displayed_code(letter: &Letter) -> Option<&str> {
+    let mut found = None;
+    for text in [&letter.subject, &letter.text] {
+        if !is_verification(text) {
+            continue;
+        }
+        for word in text.split(|c: char| !c.is_ascii_alphanumeric()) {
+            if !(4..=8).contains(&word.len()) || !word.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            if found.is_some_and(|previous| previous != word) {
+                return None;
+            }
+            found = Some(word);
+        }
+    }
+    found
+}
+
 fn decode(raw: &[u8]) -> Result<Letter, String> {
     let mail = mailparse::parse_mail(raw).map_err(|_| "邮件正文格式无效。")?;
     let mut letter = Letter {
@@ -393,10 +414,11 @@ fn decode(raw: &[u8]) -> Result<Letter, String> {
             .chars()
             .take(300)
             .collect(),
+        links: Vec::new(),
         text: String::new(),
         invites: Vec::new(),
     };
-    fn visit(part: &ParsedMail<'_>, letter: &mut Letter) {
+    fn visit(part: &ParsedMail<'_>, letter: &mut Letter, html_body: &mut Option<String>) {
         let name = part
             .get_content_disposition()
             .params
@@ -412,15 +434,25 @@ fn decode(raw: &[u8]) -> Result<Letter, String> {
             }
         } else if part.ctype.mimetype == "text/plain" && name.is_empty() && letter.text.is_empty() {
             letter.text = part.get_body().unwrap_or_default();
+        } else if part.ctype.mimetype == "text/html" && name.is_empty() && html_body.is_none() {
+            *html_body = part.get_body().ok();
         } else {
             for child in &part.subparts {
-                visit(child, letter)
+                visit(child, letter, html_body)
             }
         }
     }
-    visit(&mail, &mut letter);
+    let mut html_body = None;
+    visit(&mail, &mut letter, &mut html_body);
+    if let Some(html) = html_body {
+        let (text, links) = html::render(&html);
+        letter.links = links;
+        if letter.text.trim().is_empty() {
+            letter.text = text;
+        }
+    }
     if letter.text.is_empty() {
-        letter.text = "此邮件未提供纯文本正文，可在邮箱客户端查看原信。".into()
+        letter.text = "此邮件未提供可显示的正文。".into()
     }
     Ok(letter)
 }

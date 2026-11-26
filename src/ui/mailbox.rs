@@ -324,6 +324,29 @@ impl Inbox {
                         "邮件正文"
                     },
                 );
+                if self.verification
+                    && let Some(code) = mailbox::displayed_code(letter)
+                {
+                    super::card(ui, |ui| {
+                        super::subhead(ui, "验证码");
+                        ui.horizontal(|ui| {
+                            ui.monospace(code);
+                            if ui.button("复制验证码").clicked() {
+                                use arboard::SetExtWindows;
+                                match arboard::Clipboard::new().and_then(|mut cb| {
+                                    cb.set()
+                                        .exclude_from_monitoring()
+                                        .exclude_from_cloud()
+                                        .exclude_from_history()
+                                        .text(code)
+                                }) {
+                                    Ok(()) => self.notice = Some("验证码已复制。".into()),
+                                    Err(_) => self.error = Some("无法写入系统剪贴板。".into()),
+                                }
+                            }
+                        });
+                    });
+                }
                 if ui.button("独立窗口阅读全文").clicked() {
                     self.full_window = true;
                 }
@@ -341,6 +364,9 @@ impl Inbox {
                                 egui::ScrollArea::vertical().show(ui, |ui| {
                                     ui.heading(&letter.subject);
                                     ui.label(&letter.text);
+                                    for link in &letter.links {
+                                        ui.hyperlink_to(link, link);
+                                    }
                                 });
                             });
                         },
@@ -353,6 +379,9 @@ impl Inbox {
                     ui.strong(&letter.subject);
                 }
                 ui.label(&letter.text);
+                for link in &letter.links {
+                    ui.hyperlink_to(link, link);
+                }
                 for (i, bytes) in letter.invites.iter().enumerate() {
                     if ui.button(format!("预览日历邀请 {}", i + 1)).clicked() {
                         match crate::calendar_exchange::preview_bytes(

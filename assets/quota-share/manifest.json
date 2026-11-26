@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
+  "minimum_chrome_version": "116",
   "name": "WinDao 官网用量分享",
   "description": "点击扩展，从当前官方用量页面保存额度到本机。",
-  "version": "1.0.0",
-  "permissions": ["activeTab", "scripting"],
+  "version": "1.1.0",
+  "permissions": ["activeTab", "scripting", "alarms", "storage"],
   "action": { "default_title": "从当前官网分享用量" },
   "background": { "service_worker": "share.js" }
 }

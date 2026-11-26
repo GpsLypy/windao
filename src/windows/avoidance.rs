@@ -368,7 +368,7 @@ unsafe extern "system" fn find_overlap(hwnd: HWND, data: LPARAM) -> i32 {
     1
 }
 
-fn executable_name(pid: u32) -> Option<String> {
+pub(crate) fn executable_name(pid: u32) -> Option<String> {
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if process.is_null() {
         return None;

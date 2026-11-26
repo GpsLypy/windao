@@ -6,7 +6,7 @@ use url::Url;
 pub(crate) fn account_page(provider: Provider) -> Option<&'static str> {
     match provider {
         Provider::Gemini => Some("https://gemini.google.com/usage"),
-        Provider::GrokBot => Some("https://cursor.com/dashboard"),
+        Provider::GrokBot => Some("https://cursor.com/dashboard/usage"),
         _ => None,
     }
 }
@@ -27,6 +27,14 @@ pub(crate) fn write_share_tool(directory: &std::path::Path) -> Result<std::path:
         (
             "save.html",
             include_str!("../../assets/quota-share/save.html"),
+        ),
+        (
+            "quota.js",
+            include_str!("../../assets/quota-share/quota.js"),
+        ),
+        (
+            "files.js",
+            include_str!("../../assets/quota-share/files.js"),
         ),
         ("save.js", include_str!("../../assets/quota-share/save.js")),
     ] {

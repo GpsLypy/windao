@@ -204,3 +204,37 @@ fn usage_card(ui: &mut Ui, name: &str, usage: &ProviderUsage) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn disabled_scan_discards_pending_result_and_partial_caption_is_explicit() {
+        let (send, recv) = mpsc::channel();
+        let mut meter = AiMeter {
+            report: Some(UsageReport::default()),
+            worker: Some(recv),
+            refresh_at: Some(Instant::now() + REFRESH),
+            ..Default::default()
+        };
+        assert!(meter.caption().is_none());
+        let ctx = egui::Context::default();
+        send.send(UsageReport {
+            codex: ProviderUsage {
+                last_seen: Some(1),
+                today_tokens: 491,
+                partial: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .unwrap();
+        meter.poll(&ctx, true);
+        assert_eq!(meter.caption().as_deref(), Some("AI 今日 ≥491"));
+        let (abandoned, recv) = mpsc::channel();
+        meter.worker = Some(recv);
+        meter.poll(&ctx, false);
+        assert!(meter.caption().is_none() && meter.refresh_at.is_none() && meter.worker.is_none());
+        assert!(abandoned.send(UsageReport::default()).is_err());
+    }
+}

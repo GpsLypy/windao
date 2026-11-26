@@ -56,6 +56,7 @@ pub(crate) use taskbar_notifications::WindowRow;
 pub(crate) mod status_changes;
 pub(crate) mod system_status;
 use avoidance::Avoidance;
+pub(crate) use avoidance::executable_name;
 pub use avoidance::{AvoidanceRules, Occlusion};
 
 const SUBCLASS_ID: usize = 0x4E43;

@@ -42,6 +42,61 @@ pub(crate) fn custom(raw: &str, pointer: &str, unit: &str) -> Result<Reading> {
         .ok_or("所选 JSON 字段未返回数值。")?;
     report(value, unit, Vec::new())
 }
+pub(crate) fn user_balance(
+    base: &Url,
+    mut request: impl FnMut(&Url, bool) -> Result<(u16, String)>,
+) -> Result<Reading> {
+    let mut endpoint = base.clone();
+    let prefix = base.path().trim_end_matches('/');
+    endpoint.set_path(&format!("{prefix}/api/user/self"));
+    let (status, body) = request(&endpoint, true)?;
+    if status != 200 || body.len() > 262144 {
+        return Err("无法读取 New API 账户，请核对用户 Token、用户 ID 及访问权限。");
+    }
+    let response: Value =
+        serde_json::from_str(&body).map_err(|_| "New API 用户接口未返回 JSON。")?;
+    if response["success"] != true {
+        return Err("New API 账户查询失败。");
+    }
+    let quota = number(&response["data"]["quota"]).ok_or("账户未返回余额。")?;
+    let used = number(&response["data"]["used_quota"]).filter(|n| *n >= 0.);
+    endpoint.set_path(&format!("{prefix}/api/status"));
+    let config = request(&endpoint, false)
+        .ok()
+        .and_then(|(status, body)| {
+            (status == 200 && body.len() <= 262144)
+                .then(|| serde_json::from_str::<Value>(&body).ok())
+                .flatten()
+        })
+        .filter(|v| v["success"] == true)
+        .unwrap_or(Value::Null);
+    let data = &config["data"];
+    let unit = data["quota_display_type"]
+        .as_str()
+        .or_else(|| (data["display_in_currency"] == true).then_some("USD"));
+    let currency = match unit {
+        Some("USD") => Some((1.0, "USD")),
+        Some("CNY") => number(&data["usd_exchange_rate"]).map(|n| (n, "CNY")),
+        Some("CUSTOM") => number(&data["custom_currency_exchange_rate"])
+            .zip(data["custom_currency_symbol"].as_str()),
+        _ => None,
+    };
+    let (factor, unit) = currency
+        .and_then(|(rate, unit)| Some((rate / number(&data["quota_per_unit"])?, unit)))
+        .filter(|(factor, unit)| {
+            factor.is_finite()
+                && *factor > 0.
+                && !unit.is_empty()
+                && unit.chars().count() <= 12
+                && !unit.chars().any(char::is_control)
+        })
+        .unwrap_or((1.0, "站点配额"));
+    let lines = used
+        .map(|n| format!("已用 {} {unit}", n * factor))
+        .into_iter()
+        .collect();
+    report(quota * factor, unit, lines)
+}
 pub(crate) fn query(
     url: &Url,
     mut request: impl FnMut(&Url) -> Result<(u16, String)>,
@@ -175,5 +230,25 @@ mod tests {
         assert_eq!(seen, 3);
         assert!(base("https://token@relay.example").is_err());
         assert!(query(&url, |_| Ok((302, String::new()))).is_err());
+    }
+    #[test]
+    fn custom_balance_respects_selected_path_and_explicit_service_errors() {
+        assert!(
+            matches!(custom(r#"{"account":{"wallet":{"CNY":0}}}"#, "/account/wallet/CNY","CNY"),Ok(Reading::Units{summary,..}) if summary=="0 CNY")
+        );
+        assert!(custom(r#"{"success":false,"balance":1}"#, "/balance", "USD").is_err());
+        assert!(custom(r#"{"account":{}}"#, "/balance", "USD").is_err());
+    }
+    #[test]
+    fn new_api_reads_private_user_and_public_currency_separately() {
+        let url = base("https://relay.example/tenant").unwrap();
+        let reading = user_balance(&url, |url,private| match (url.path(),private) {
+            ("/tenant/api/user/self",true) => Ok((200,r#"{"success":true,"data":{"quota":500000,"used_quota":250000}}"#.into())),
+            ("/tenant/api/status",false) => Ok((200,r#"{"success":true,"data":{"quota_per_unit":500000,"quota_display_type":"CNY","usd_exchange_rate":7}}"#.into())),
+            _=>panic!("unexpected endpoint")
+        }).unwrap();
+        assert!(
+            matches!(reading, Reading::Units{summary,lines} if summary=="7 CNY" && lines==["已用 3.5 CNY"])
+        );
     }
 }

@@ -145,6 +145,12 @@ pub(super) fn parse(provider: Provider, v: &Value) -> Result<Reading> {
                     .collect::<String>();
                 lines.push(format!("{label}　{amount} 积分"));
             }
+            if let Some(plan) = v["data"]["SubscriptionPackageName"]
+                .as_str()
+                .filter(|s| !s.is_empty() && s.chars().count() <= 80)
+            {
+                lines.insert(0, format!("套餐　{plan}"));
+            }
             if !total.is_finite() || packages.len() > 128 {
                 return Err(INVALID);
             }
@@ -198,10 +204,25 @@ fn kiro(v: &Value) -> Result<Reading> {
         over,
         timestamp(&credit["nextDateReset"]).or(timestamp(&v["nextDateReset"])),
     )?;
+    fn active(row: &Value, field: &str, expires: &str, now: i64) -> Result<bool> {
+        if row.is_null() {
+            return Ok(false);
+        }
+        match row[field].as_str() {
+            Some(s) if s.eq_ignore_ascii_case("EXPIRED") || s.eq_ignore_ascii_case("INACTIVE") => {
+                Ok(false)
+            }
+            Some(s) if s.eq_ignore_ascii_case("ACTIVE") => {
+                if row[expires].is_null() {
+                    return Ok(true);
+                }
+                timestamp(&row[expires]).map(|t| t > now).ok_or(INVALID)
+            }
+            _ => Err(INVALID),
+        }
+    }
     let trial = &credit["freeTrialInfo"];
-    if trial["freeTrialStatus"] == "ACTIVE"
-        && timestamp(&trial["freeTrialExpiry"]).is_none_or(|d| d > now)
-    {
+    if active(trial, "freeTrialStatus", "freeTrialExpiry", now)? {
         add("试用", trial, 0., timestamp(&trial["freeTrialExpiry"]))?;
     }
     let bonuses = match &credit["bonuses"] {
@@ -210,11 +231,28 @@ fn kiro(v: &Value) -> Result<Reading> {
         Value::Null => &[],
         _ => return Err(INVALID),
     };
-    for b in bonuses
-        .iter()
-        .filter(|b| b["status"] == "ACTIVE" && timestamp(&b["expiresAt"]).is_none_or(|d| d > now))
+    for bonus in bonuses {
+        if active(bonus, "status", "expiresAt", now)? {
+            let label = bonus["displayName"]
+                .as_str()
+                .filter(|s| !s.is_empty() && s.chars().count() <= 50)
+                .unwrap_or("赠送或加购");
+            add(label, bonus, 0., timestamp(&bonus["expiresAt"]))?;
+        }
+    }
+    if let Some(plan) = v["subscriptionInfo"]["subscriptionTitle"]
+        .as_str()
+        .filter(|s| !s.is_empty() && s.chars().count() <= 80)
     {
-        add("赠送或加购", b, 0., timestamp(&b["expiresAt"]))?;
+        lines.insert(0, format!("套餐　{plan}"));
+    }
+    if v["overageConfiguration"]["overageStatus"]
+        .as_str()
+        .is_some_and(|s| s.eq_ignore_ascii_case("ENABLED"))
+        && (!credit["overageCapWithPrecision"].is_null() || !credit["overageCap"].is_null())
+    {
+        let cap = amount(credit, "overageCapWithPrecision", "overageCap")?;
+        lines.push(format!("超额上限　{cap:.1}"));
     }
     if over > 0. {
         lines.push(format!("超额使用　{over:.1}"));
@@ -226,4 +264,53 @@ fn kiro(v: &Value) -> Result<Reading> {
         summary: format!("{total:.1} 点"),
         lines,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn reads_official_windows_and_rejects_unknown_allowances() {
+        let gemini = json!([{ "data": {"viewer": {"rpcs":{"getUsageInfo":{
+            "pools":[{"poolType":"GXU_WEEKLY","percentageUsed":0,"gxu":{"windowRefreshesAt":"2030-01-01T00:00:00Z"}},{"poolType":"UNKNOWN","percentageUsed":1}]
+        }}}}}]);
+        assert!(
+            matches!(parse(Provider::Gemini,&gemini),Ok(Reading::Plan(rows)) if rows.len()==1 && rows[0].used_percent==0.0 && rows[0].resets_at==Some(1893456000))
+        );
+        assert!(
+            parse(
+                Provider::GrokBot,
+                &json!({"usagePercent":40,"usesPooledEnterpriseAllowance":true})
+            )
+            .is_err()
+        );
+        assert!(
+            matches!(parse(Provider::GrokBot,&json!({"usagePercent":100})), Ok(Reading::Plan(rows)) if rows[0].used_percent==100.0)
+        );
+        assert!(
+            matches!(parse(Provider::KimiCode,&json!({"usage":{"limit":100,"remaining":40},"limits":[{"window":{"duration":5,"timeUnit":"TIME_UNIT_HOUR"},"detail":{"limit":20,"used":20}}]})), Ok(Reading::Plan(rows)) if rows.len()==2 && rows[0].used_percent==60.0)
+        );
+        assert!(
+            parse(
+                Provider::KimiCode,
+                &json!({"usages":{"limit_5h":{"used_ratio":1.2}}})
+            )
+            .is_err()
+        );
+        assert!(
+            matches!(parse(Provider::WorkBuddy,&json!({"code":0,"data":{"Packages":[{"PackageCode":"starter","CycleRemainCapacity":0}]}})),Ok(Reading::Units{summary,..}) if summary=="0 积分")
+        );
+    }
+
+    #[test]
+    fn kiro_keeps_overage_separate_and_skips_expired_pools() {
+        let usage = json!({"usageBreakdownList":[{"resourceType":"CREDIT","usageLimit":50,"currentUsage":61,"currentOverages":11,
+            "freeTrialInfo":{"freeTrialStatus":"ACTIVE","freeTrialExpiry":1,"usageLimit":100,"currentUsage":0},
+            "bonuses":[{"status":"ACTIVE","expiresAt":1,"usageLimit":40,"currentUsage":0},{"status":"ACTIVE","expiresAt":4102444800_i64,"usageLimit":10,"currentUsage":2}]}]});
+        assert!(
+            matches!(kiro(&usage),Ok(Reading::Units{summary,lines}) if summary=="8.0 点" && lines.len()==3 && lines[2].contains("11.0"))
+        );
+    }
 }

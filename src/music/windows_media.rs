@@ -60,6 +60,7 @@ pub(super) fn run(
         activity: &activity,
         manager: None,
         current: None,
+        caption: None,
         generation: 0,
     };
     let mut reconcile_at = Instant::now();
@@ -176,6 +177,7 @@ struct Worker<'a> {
     activity: &'a Arc<Activity>,
     manager: Option<WatchManager>,
     current: Option<WatchSession>,
+    caption: Option<super::player_window::Caption>,
     generation: u64,
 }
 
@@ -194,8 +196,28 @@ impl Worker<'_> {
         update_artwork: bool,
     ) -> Result<Option<Snapshot>, String> {
         let Some(session) = self.current_session()? else {
-            self.current = None;
-            return Ok(None);
+            let had_session = self.current.take().is_some();
+            if read_metadata || had_session {
+                let caption = super::player_window::read(None);
+                if caption != self.caption {
+                    self.generation = self.generation.wrapping_add(1);
+                }
+                self.caption = caption;
+            }
+            return Ok(self.caption.as_ref().map(|c| Snapshot {
+                title: c.title.clone(),
+                artist: c.artist.clone(),
+                album: String::new(),
+                source: c.source.clone(),
+                state: PlaybackState::Unknown,
+                position: 0.,
+                duration: None,
+                capabilities: Capabilities::default(),
+                artwork: None,
+                generation: self.generation,
+                sampled_at: Instant::now(),
+                rate: 0.,
+            }));
         };
         if self
             .current
@@ -215,13 +237,21 @@ impl Worker<'_> {
             if changed || update_artwork {
                 current.artwork = decode_artwork(&properties);
             }
+            self.caption = if metadata.artist.is_empty() && !metadata.title.is_empty() {
+                super::player_window::read(Some((&current.source, &metadata.title)))
+            } else {
+                None
+            };
             current.metadata = Some(metadata);
         }
         let metadata = current.metadata.as_ref().expect("metadata loaded");
         let (state, rate, controls, timeline) = playback(&current.session)?;
         Ok(Some(Snapshot {
             title: metadata.title.clone(),
-            artist: metadata.artist.clone(),
+            artist: self
+                .caption
+                .as_ref()
+                .map_or_else(|| metadata.artist.clone(), |c| c.artist.clone()),
             album: metadata.album.clone(),
             source: current.source.clone(),
             state,

@@ -166,6 +166,10 @@ struct TokenObservation {
     truncated: bool,
 }
 
+pub(crate) fn read_codex_profile(root: &Path) -> ProviderUsage {
+    codex(root, &Period::new(Local::now()))
+}
+
 fn codex(root: &Path, period: &Period) -> ProviderUsage {
     let mut logs = Logs::codex(root, period.since());
     let mut summary = ProviderUsage::default();

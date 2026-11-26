@@ -1,7 +1,7 @@
 use eframe::egui::{self, Button, Frame, Grid, Id, Margin, RichText, Ui};
 
 use crate::dock::{
-    CapsulePage, CapsuleShape, CapsuleSkin, DockEdge, DockSettings, executable_name,
+    CapsulePage, CapsuleShape, CapsuleSkin, DockEdge, DockSettings, Resident, executable_name,
 };
 use crate::workspace::Settings;
 
@@ -103,6 +103,11 @@ impl Editor {
                 ui.selectable_value(&mut settings.dock.clock_24h, false, "12 小时制");
             });
             ui.checkbox(&mut settings.dock.top_lyrics, "顶部收起时显示一行歌词");
+        });
+        card(ui, |ui| {
+            subhead(ui, "横向常驻组件顺序");
+            ui.weak("拖动后按从左到右的顺序显示已启用组件。");
+            resident_editor(ui, &mut settings.dock);
         });
     }
 
@@ -220,6 +225,46 @@ fn display_selector(ui: &mut Ui, selected: &mut Option<String>, displays: &[Disp
         });
 }
 
+fn resident_editor(ui: &mut Ui, dock: &mut DockSettings) {
+    let order = dock.resident_order;
+    let mut moved = None;
+    for (index, resident) in order.into_iter().enumerate() {
+        let row = Frame::new().inner_margin(Margin::symmetric(6, 3));
+        let (_, dropped) = ui.dnd_drop_zone::<Resident, _>(row, |ui| {
+            ui.horizontal(|ui| {
+                ui.dnd_drag_source(Id::new(("resident-grab", resident)), resident, |ui| {
+                    ui.label(RichText::new("≡").size(17.))
+                        .on_hover_text("拖动排序");
+                });
+                ui.label(resident.label());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_enabled(index + 1 < order.len(), Button::new("右移"))
+                        .clicked()
+                    {
+                        moved = Some((resident, index + 1));
+                    }
+                    if ui.add_enabled(index > 0, Button::new("左移")).clicked() {
+                        moved = Some((resident, index.saturating_sub(1)));
+                    }
+                });
+            });
+        });
+        if let Some(resident) = dropped {
+            moved = Some((*resident, index));
+        }
+    }
+    if let Some((resident, to)) = moved
+        && let Some(from) = order.iter().position(|r| *r == resident)
+    {
+        if from < to {
+            dock.resident_order[from..=to].rotate_left(1);
+        } else {
+            dock.resident_order[to..=from].rotate_right(1);
+        }
+    }
+}
+
 fn page_editor(ui: &mut Ui, dock: &mut DockSettings) {
     let count = dock.pages.len();
     let enabled = dock.pages.iter().filter(|entry| entry.enabled).count();
@@ -270,6 +315,46 @@ fn page_editor(ui: &mut Ui, dock: &mut DockSettings) {
 mod tests {
     use super::*;
     use eframe::egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, pos2};
+
+    #[test]
+    fn dragging_weather_before_the_clock_persists_its_order() {
+        let ctx = Context::default();
+        let mut dock = DockSettings::default();
+        let mut frame = |events| {
+            let _ = ctx.run_ui(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_max(Pos2::ZERO, pos2(600.0, 400.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| resident_editor(ui, &mut dock),
+            );
+        };
+        frame(Vec::new());
+        let handle = |page| {
+            ctx.read_response(Id::new(("resident-grab", page)))
+                .unwrap()
+                .rect
+                .center()
+        };
+        let first = handle(Resident::Weather);
+        let target = handle(Resident::Clock);
+        let button = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        frame(vec![Event::PointerMoved(first), button(first, true)]);
+        frame(vec![Event::PointerMoved(target)]);
+        frame(vec![button(target, false)]);
+        assert_eq!(dock.resident_order[2], Resident::Weather);
+        assert_eq!(dock.resident_order[3], Resident::Clock);
+        let saved = serde_json::to_string(&dock).unwrap();
+        let loaded: DockSettings = serde_json::from_str(&saved).unwrap();
+        assert_eq!(dock.resident_order, loaded.resident_order);
+        assert!(loaded.validate().is_ok());
+    }
 
     #[test]
     fn dragging_a_page_to_another_row_changes_its_order() {

@@ -27,6 +27,7 @@ struct ResultData {
     reading: Reading,
     observed: i64,
     linked: Option<PathBuf>,
+    organization: Option<String>,
     notice: Option<String>,
 }
 struct Pending {
@@ -43,12 +44,14 @@ impl Drop for Pending {
 pub(super) struct ProviderBalances {
     profiles: Profiles,
     loaded: bool,
+    load_error: Option<String>,
     selected: Option<Uuid>,
     provider: Provider,
     name: String,
     color: usize,
     endpoint: String,
     balance_field: String,
+    relay_user: String,
     unit: String,
     key: Zeroizing<String>,
     remember: bool,
@@ -76,7 +79,24 @@ fn run(
     let mut notice = None;
     let mut observed = now;
     let mut linked = None;
+    let mut organization = None;
     let reading = match action {
+        Action::File(path) if provider == Provider::ClaudeDesktop => {
+            let (reading, time, org) = crate::provider_balances::local_profiles::claude(
+                &path,
+                profile.organization.as_deref(),
+            )?;
+            observed = time;
+            organization = Some(org);
+            linked = Some(path);
+            reading
+        }
+        Action::File(path) if provider == Provider::CodexLocal => {
+            let (reading, time) = crate::provider_balances::local_profiles::codex(&path)?;
+            observed = time;
+            linked = Some(path);
+            reading
+        }
         Action::File(path) => {
             let reading = read_report(provider, &path)?;
             observed = fs::metadata(&path)
@@ -124,6 +144,7 @@ fn run(
         reading,
         observed,
         linked,
+        organization,
         notice,
     })
 }
@@ -135,13 +156,14 @@ impl ProviderBalances {
         self.loaded = true;
         match Profiles::open(dir) {
             Ok(profiles) => {
+                self.load_error = None;
                 self.selected = profiles
                     .pinned
                     .or_else(|| profiles.accounts.first().map(|p| p.id));
                 self.profiles = profiles;
             }
             Err(e) => {
-                self.notice = Some(e.into());
+                self.load_error = Some(e.into());
             }
         }
     }
@@ -209,6 +231,7 @@ impl ProviderBalances {
                             profile.report = Some(value.reading);
                             profile.observed = Some(value.observed);
                             profile.file = value.linked;
+                            profile.organization = value.organization;
                         }
                     });
                 }
@@ -241,6 +264,13 @@ impl ProviderBalances {
         self.tick(ui.ctx(), dir);
         super::card(ui, |ui| {
             super::subhead(ui, "服务商账户");
+            if let Some(error) = &self.load_error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+                if ui.button("重新读取账户列表").clicked() {
+                    self.loaded = false;
+                }
+                return;
+            }
             ui.horizontal_wrapped(|ui| {
                 for p in &self.profiles.accounts {
                     if ui
@@ -289,6 +319,11 @@ impl ProviderBalances {
                             .hint_text("中转站 HTTPS 地址")
                             .char_limit(2048),
                     );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.relay_user)
+                            .hint_text("New API 用户 Token 查询：填写对应用户 ID")
+                            .char_limit(20),
+                    );
                     egui::CollapsingHeader::new("自定义余额字段").show(ui,|ui|{
                         ui.weak("填写完整查询地址和 JSON 字段即可读取自定义余额，留空会识别常用中转站接口。");
                         ui.add(egui::TextEdit::singleline(&mut self.balance_field).hint_text("字段路径，例如 /data/balance").char_limit(200));
@@ -300,6 +335,22 @@ impl ProviderBalances {
                     match next
                         .add(self.provider, &self.name, self.color, &self.endpoint)
                         .and_then(|id| {
+                            if self.provider == Provider::Relay
+                                && !self.relay_user.trim().is_empty()
+                            {
+                                if !self.balance_field.trim().is_empty() {
+                                    return Err("用户 Token 和自定义余额字段请选择一种查询方式。");
+                                }
+                                let user = self
+                                    .relay_user
+                                    .trim()
+                                    .parse::<u64>()
+                                    .ok()
+                                    .filter(|n| *n > 0)
+                                    .ok_or("New API 用户 ID 应是大于零的整数。")?;
+                                next.accounts.last_mut().expect("new account").relay_user =
+                                    Some(user);
+                            }
                             if self.provider == Provider::Relay && !self.balance_field.is_empty() {
                                 if !self.balance_field.starts_with('/')
                                     || self.unit.trim().is_empty()
@@ -320,6 +371,7 @@ impl ProviderBalances {
                             self.name.clear();
                             self.endpoint.clear();
                             self.balance_field.clear();
+                            self.relay_user.clear();
                             self.unit.clear();
                             self.adding = false;
                             self.key = Zeroizing::default();
@@ -351,7 +403,7 @@ impl ProviderBalances {
             ui.weak(format!(
                 "{} {}",
                 if p.file.is_some() {
-                    "文件更新时间"
+                    "用量记录时间"
                 } else {
                     "上次查询"
                 },
@@ -427,6 +479,7 @@ impl ProviderBalances {
                 }
                 let hint = match p.provider {
                     Provider::KiroUs | Provider::KiroEu => "账户授权的访问令牌",
+                    Provider::Relay if p.relay_user.is_some() => "New API 用户 Token",
                     Provider::KimiCode => "Kimi Code 套餐 Key 或访问令牌",
                     _ => "服务商 API Key",
                 };
@@ -453,19 +506,36 @@ impl ProviderBalances {
             }
         }
         if p.provider != Provider::Relay {
-            if p.provider.report_only() {
+            if p.provider == Provider::CodexLocal {
+                ui.weak("选择此账户使用的 Codex 数据目录（包含 sessions 子目录）。");
+            } else if p.provider == Provider::ClaudeDesktop {
+                ui.weak("在 Claude 桌面版打开用量页，选择 plan-usage-history.json。此连接只显示同一组织的记录。");
+            } else if p.provider.report_only() {
                 ui.weak("选择服务商的用量 JSON。固定此账户后，胶囊会跟随文件更新。");
             }
             ui.horizontal_wrapped(|ui| {
-                if ui.button("选择用量 JSON").clicked() {
-                    match crate::windows::open_file(crate::windows::FileKind::Json) {
+                let folder = p.provider == Provider::CodexLocal;
+                if ui
+                    .button(if folder {
+                        "选择 Codex 目录"
+                    } else {
+                        "选择用量 JSON"
+                    })
+                    .clicked()
+                {
+                    let choice = if folder {
+                        crate::windows::open_folder()
+                    } else {
+                        crate::windows::open_file(crate::windows::FileKind::Json)
+                    };
+                    match choice {
                         Ok(Some(path)) => action = Some(Action::File(path)),
                         Ok(None) => {}
                         Err(e) => self.notice = Some(e.to_string()),
                     }
                 }
                 if let Some(file) = &p.file
-                    && ui.button("重读文件").clicked()
+                    && ui.button("刷新本机记录").clicked()
                 {
                     action = Some(Action::File(file.clone()));
                 }
@@ -529,6 +599,13 @@ fn render_reading(ui: &mut Ui, reading: &Reading) {
         Reading::Plan(quotas) => {
             for quota in quotas {
                 ui.label(&quota.label);
+                if quota
+                    .resets_at
+                    .is_some_and(|t| t <= Local::now().timestamp())
+                {
+                    ui.weak("已到重置时间，等待新的用量记录。");
+                    continue;
+                }
                 ui.add(
                     egui::ProgressBar::new((quota.used_percent / 100.0) as f32)
                         .text(format!("已用 {}%", quota.used_percent))

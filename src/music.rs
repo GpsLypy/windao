@@ -11,6 +11,7 @@ use std::{
 use eframe::egui;
 
 mod lyrics;
+mod player_window;
 mod windows_media;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -133,6 +134,7 @@ pub struct Media {
 
 struct LyricRequest {
     generation: u64,
+    replace_existing: bool,
     response: Receiver<Result<String, String>>,
 }
 
@@ -223,10 +225,11 @@ impl Media {
             Err(TryRecvError::Disconnected) => Err("在线歌词查询已中断。".into()),
         };
         let requested_generation = request.generation;
+        let replace_existing = request.replace_existing;
         self.lyric_request = None;
-        if let Some(track) =
-            track.filter(|track| track.generation == requested_generation && self.lyrics.is_none())
-        {
+        if let Some(track) = track.filter(|track| {
+            track.generation == requested_generation && (replace_existing || self.lyrics.is_none())
+        }) {
             self.lyric_error = result
                 .and_then(|raw| self.install_lyrics(&track, &raw))
                 .err();
@@ -293,6 +296,7 @@ impl Media {
             .ok_or("播放曲目已切换，请重新选择歌词。")?;
         let raw = lyrics::read(path)?;
         self.install_lyrics(&track, &raw)?;
+        self.lyric_request = None;
         self.lyric_error = None;
         Ok(())
     }
@@ -324,6 +328,7 @@ impl Media {
         self.lyric_error = None;
         self.lyric_request = Some(LyricRequest {
             generation,
+            replace_existing: song_id.is_some(),
             response,
         });
         Ok(())

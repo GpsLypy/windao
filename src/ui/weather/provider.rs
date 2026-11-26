@@ -7,6 +7,8 @@ use std::path::Path;
 #[serde(default)]
 pub(super) struct Preferences {
     pub resident: bool,
+    pub pause_refresh: bool,
+    pub city: Option<City>,
     pub monthly_limit: u32,
     pub host: String,
     pub encrypted_key: Vec<u8>,
@@ -50,31 +52,47 @@ pub(super) fn valid_host(host: &str) -> bool {
         })
 }
 
-pub(super) fn location(body: &str) -> Result<City, String> {
+pub(super) fn locate_with(
+    mut get: impl FnMut(&str) -> Result<String, String>,
+) -> Result<City, String> {
+    for (url, backup) in [
+        ("https://ipwho.is/?lang=zh-CN", false),
+        ("https://free.freeipapi.com/api/v1/json", true),
+    ] {
+        if let Ok(body) = get(url)
+            && let Ok(city) = location(&body, backup)
+        {
+            return Ok(city);
+        }
+    }
+    Err("两个定位服务均未返回有效城市，请搜索城市。".into())
+}
+
+fn location(body: &str, backup: bool) -> Result<City, String> {
     #[derive(Deserialize)]
     struct Location {
-        success: bool,
+        success: Option<bool>,
+        #[serde(alias = "cityName")]
         city: String,
+        #[serde(alias = "regionName")]
         region: Option<String>,
+        #[serde(alias = "countryName")]
         country: Option<String>,
         latitude: f64,
         longitude: f64,
     }
     let v: Location = serde_json::from_str(body).map_err(|_| "无法读取网络位置。")?;
-    if !v.success
-        || v.city.trim().is_empty()
-        || v.latitude.abs() > 90.0
-        || v.longitude.abs() > 180.0
-    {
-        return Err("未找到网络位置，请搜索城市。".into());
-    }
-    Ok(City {
+    let city = City {
         name: v.city,
         admin1: v.region,
         country: v.country,
         latitude: v.latitude,
         longitude: v.longitude,
-    })
+    };
+    if (!backup && v.success != Some(true)) || !city.valid() {
+        return Err("未找到网络位置，请搜索城市。".into());
+    }
+    Ok(city)
 }
 
 #[derive(Deserialize)]
@@ -240,8 +258,15 @@ pub(super) fn fetch(
     let current = request("now")?;
     let now = chrono::Utc::now().timestamp();
     let position = format!("{longitude:.2},{latitude:.2}");
-    let path = directory.join("weather-qweather-7d.json");
-    if let Some(cached) = DaysCache::read(&path, host, &position, now) {
+    let path = super::cache_path(directory, "daily", host, latitude, longitude);
+    if let Some(cached) = DaysCache::read(&path, host, &position, now).or_else(|| {
+        DaysCache::read(
+            &directory.join("weather-qweather-7d.json"),
+            host,
+            &position,
+            now,
+        )
+    }) {
         return report(&current, &cached);
     }
     let forecast = request("7d")?;
@@ -254,8 +279,9 @@ pub(super) fn fetch(
     };
     if let Ok(mut tmp) = tempfile::NamedTempFile::new_in(directory)
         && serde_json::to_writer(&mut tmp, &cached).is_ok()
+        && tmp.persist(path).is_ok()
     {
-        let _ = tmp.persist(path);
+        super::prune(directory, "daily");
     }
     Ok(reading)
 }
@@ -264,11 +290,26 @@ pub(super) fn fetch(
 mod tests {
     use super::*;
     #[test]
+    fn fallback_location_uses_the_second_service_after_an_invalid_primary() {
+        let mut calls = Vec::new();
+        let found = locate_with(|url| {
+            calls.push(url.to_owned());
+            Ok(if calls.len() == 1 { r#"{"success":false}"# } else { r#"{"cityName":"杭州","regionName":"浙江","countryName":"中国","latitude":30.3,"longitude":120.2}"# }.into())
+        }).unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(found.name, "杭州");
+        assert!(
+            locate_with(|_| Ok(r#"{"cityName":"杭州","latitude":91,"longitude":0}"#.into()))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn weather_provider_and_location_are_validated() {
         assert!(valid_host("example.re.qweatherapi.com"));
         assert!(!valid_host("example.re.qweatherapi.com.evil.invalid"));
         assert!(!valid_host("https://example.qweatherapi.com"));
-        let location = location(r#"{"success":true,"city":"杭州","region":"浙江","country":"中国","latitude":30.3,"longitude":120.2}"#).unwrap();
+        let location = location(r#"{"success":true,"city":"杭州","region":"浙江","country":"中国","latitude":30.3,"longitude":120.2}"#, false).unwrap();
         assert_eq!(location.name, "杭州");
         let now = r#"{"code":"200","now":{"obsTime":"2026-11-26T17:00+08:00","temp":"19","feelsLike":"18","humidity":"58","windSpeed":"12","text":"多云"}}"#;
         let days = (1..=7).map(|day|serde_json::json!({"fxDate":format!("2026-12-{day:02}"),"tempMin":"2","tempMax":"11","textDay":"晴","sunrise":"06:40","sunset":"17:10"})).collect::<Vec<_>>();

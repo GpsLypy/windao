@@ -91,6 +91,38 @@ pub struct PageSetting {
     pub enabled: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Resident {
+    Companion,
+    Ai,
+    Clock,
+    Alerts,
+    Weather,
+    Metrics,
+}
+
+impl Resident {
+    pub const ALL: [Self; 6] = [
+        Self::Companion,
+        Self::Ai,
+        Self::Clock,
+        Self::Alerts,
+        Self::Weather,
+        Self::Metrics,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Companion => "猫咪伙伴",
+            Self::Ai => "AI 用量与额度",
+            Self::Clock => "时钟与日期",
+            Self::Alerts => "消息角标",
+            Self::Weather => "天气",
+            Self::Metrics => "系统指标",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DockSettings {
@@ -110,6 +142,7 @@ pub struct DockSettings {
     pub hide_fullscreen: bool,
     pub avoid_apps: Vec<String>,
     pub pages: Vec<PageSetting>,
+    pub resident_order: [Resident; 6],
 }
 
 impl Default for DockSettings {
@@ -130,6 +163,7 @@ impl Default for DockSettings {
             avoid_browsers: true,
             hide_fullscreen: true,
             avoid_apps: Vec::new(),
+            resident_order: Resident::ALL,
             pages: CapsulePage::ALL
                 .map(|page| PageSetting {
                     page,
@@ -158,6 +192,7 @@ impl DockSettings {
         let unique: HashSet<_> = self.pages.iter().map(|entry| entry.page).collect();
         if !(80..=140).contains(&self.scale)
             || !(-100..=100).contains(&self.offset)
+            || self.resident_order.iter().collect::<HashSet<_>>().len() != Resident::ALL.len()
             || unique.len() != CapsulePage::ALL.len()
             || self.pages.len() != CapsulePage::ALL.len()
             || !self.pages.iter().any(|entry| entry.enabled)
@@ -324,6 +359,7 @@ mod tests {
         let settings: DockSettings = serde_json::from_str("{}").unwrap();
         assert!(settings.validate().is_ok());
         assert_eq!(settings.edge, DockEdge::Top);
+        assert_eq!(settings.resident_order, Resident::ALL);
         assert!(!settings.oled_shift);
         assert!(!settings.top_lyrics);
         assert!(!settings.exclude_from_capture);
