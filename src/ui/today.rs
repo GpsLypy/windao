@@ -4,7 +4,7 @@ use eframe::egui::{
 };
 
 use super::{Page, Workbench, accent, calendar, card, focus, primary, subhead};
-use crate::workspace::{Store, TaskStatus};
+use crate::workspace::{FocusKind, Store, TaskStatus};
 
 impl Workbench {
     pub(super) fn today(&mut self, ui: &mut Ui, store: &mut Store) {
@@ -111,14 +111,169 @@ impl Workbench {
         if ui.available_width() >= 680.0 {
             ui.columns(2, |columns| {
                 self.agenda_today(&mut columns[0], store, today);
-                self.focus_today(&mut columns[1], store, timestamp);
+                self.planning_today(&mut columns[1], store, today, timestamp);
             });
         } else {
             self.agenda_today(ui, store, today);
+            self.planning_today(ui, store, today, timestamp);
+        }
+        ui.add_space(6.0);
+        if ui.available_width() >= 680.0 {
+            ui.columns(2, |columns| {
+                self.focus_today(&mut columns[0], store, timestamp);
+                self.rhythm_today(&mut columns[1], store, today);
+            });
+        } else {
             self.focus_today(ui, store, timestamp);
+            self.rhythm_today(ui, store, today);
         }
         ui.add_space(6.0);
         self.tasks_today(ui, store, today, timestamp);
+    }
+
+    fn planning_today(&mut self, ui: &mut Ui, store: &Store, date: NaiveDate, now: i64) {
+        let local_hour = |hour| {
+            date.and_hms_opt(hour, 0, 0)?
+                .and_local_timezone(Local)
+                .earliest()
+                .map(|dt| dt.timestamp_millis())
+        };
+        let (Some(start), Some(end)) = (local_hour(9), local_hour(18)) else {
+            return;
+        };
+        let openings = free_intervals(
+            start,
+            end,
+            store
+                .state()
+                .events
+                .iter()
+                .filter(|event| !event.all_day)
+                .map(|event| (event.start_at, event.end_at)),
+        );
+        let remaining: Vec<_> = openings
+            .iter()
+            .map(|&(left, right)| (left.max(now), right))
+            .filter(|&(left, right)| left < right)
+            .collect();
+        let minutes = remaining
+            .iter()
+            .map(|&(left, right)| right - left)
+            .sum::<i64>()
+            / 60_000;
+        card(ui, |ui| {
+            if section_header(ui, "可用时间", "打开日历") {
+                self.calendar.select_date(date);
+                self.navigate(Page::Calendar);
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new(format!("还可安排 {minutes} 分钟"))
+                        .size(19.0)
+                        .strong(),
+                );
+                ui.weak("09:00–18:00");
+            });
+            let (track, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
+            let highlight = accent(ui.visuals().dark_mode);
+            ui.painter().rect_filled(
+                track,
+                3,
+                ui.visuals().widgets.noninteractive.bg_stroke.color,
+            );
+            let x = |time: i64| {
+                track.left() + track.width() * (time - start) as f32 / (end - start) as f32
+            };
+            for &(left, right) in &remaining {
+                let rect = egui::Rect::from_min_max(
+                    egui::pos2(x(left), track.top()),
+                    egui::pos2(x(right), track.bottom()),
+                );
+                ui.painter()
+                    .rect_filled(rect, 2, highlight.gamma_multiply(0.6));
+            }
+            if (start..end).contains(&now) {
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(x(now), track.top() - 2.0),
+                        egui::pos2(x(now), track.bottom() + 2.0),
+                    ],
+                    Stroke::new(2.0_f32, ui.visuals().strong_text_color()),
+                );
+            }
+            match remaining.first() {
+                Some(&(left, right)) => {
+                    let fmt = if store.state().settings.dock.clock_24h {
+                        "%H:%M"
+                    } else {
+                        "%I:%M %p"
+                    };
+                    let range = |t| super::display_time(t, fmt);
+                    ui.label(format!(
+                        "{}  {}–{}",
+                        if left == now {
+                            "现在有空"
+                        } else {
+                            "下一段空档"
+                        },
+                        range(left),
+                        range(right)
+                    ));
+                }
+                None if now >= end => {
+                    ui.weak("今天的规划时段已结束");
+                }
+                None => {
+                    ui.weak("今天的规划时段已排满");
+                }
+            }
+            ui.weak("日程前后各留 5 分钟，全天事项不占用空档。");
+        });
+    }
+
+    fn rhythm_today(&mut self, ui: &mut Ui, store: &Store, today: NaiveDate) {
+        let state = store.state();
+        let today_timestamp =
+            |at| super::local_timestamp(at).is_some_and(|dt| dt.date_naive() == today);
+        let minutes: u64 = state
+            .focus
+            .history
+            .iter()
+            .filter(|entry| entry.kind == FocusKind::Focus && today_timestamp(entry.completed_at))
+            .map(|entry| u64::from(entry.minutes))
+            .sum();
+        let completed = state
+            .tasks
+            .iter()
+            .filter(|task| {
+                if task.repeat.is_repeating() {
+                    task.completed_dates.binary_search(&today).is_ok()
+                } else {
+                    task.status == TaskStatus::Completed
+                        && task.completed_at.is_some_and(today_timestamp)
+                }
+            })
+            .count();
+        card(ui, |ui| {
+            if section_header(ui, "今日节奏", "查看专注记录") {
+                self.navigate(Page::Focus);
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.vertical(|ui| {
+                    ui.weak("已专注");
+                    ui.label(RichText::new(format!("{minutes} 分钟")).size(19.0).strong());
+                });
+                ui.add_space(12.0);
+                ui.vertical(|ui| {
+                    ui.weak("已完成待办");
+                    ui.label(RichText::new(format!("{completed} 项")).size(19.0).strong());
+                });
+            });
+            if ui.button("打开便笺").clicked() {
+                self.navigate(Page::Notes);
+            }
+        });
     }
 
     fn focus_today(&mut self, ui: &mut Ui, store: &mut Store, timestamp: i64) {
@@ -246,6 +401,37 @@ impl Workbench {
     }
 }
 
+// A timed event blocks its interval plus the same five-minute margin on either side.
+fn free_intervals(
+    start: i64,
+    end: i64,
+    events: impl Iterator<Item = (i64, i64)>,
+) -> Vec<(i64, i64)> {
+    let mut busy: Vec<_> = events
+        .filter(|&(a, b)| b > a)
+        .map(|(a, b)| {
+            (
+                start.max(a.saturating_sub(300_000)),
+                end.min(b.saturating_add(300_000)),
+            )
+        })
+        .filter(|&(a, b)| a < b)
+        .collect();
+    busy.sort_unstable();
+    let mut cursor = start;
+    let mut free = Vec::new();
+    for (a, b) in busy {
+        if cursor < a {
+            free.push((cursor, a));
+        }
+        cursor = cursor.max(b);
+    }
+    if cursor < end {
+        free.push((cursor, end));
+    }
+    free
+}
+
 fn section_header(ui: &mut Ui, title: &str, link: &str) -> bool {
     ui.horizontal(|ui| {
         subhead(ui, title);
@@ -263,4 +449,28 @@ fn section_header(ui: &mut Ui, title: &str, link: &str) -> bool {
         .inner
     })
     .inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::free_intervals;
+
+    #[test]
+    fn planning_clips_cross_midnight_events_and_merges_overlapping_buffers() {
+        let m = 60_000;
+        let events = [
+            (-30 * m, 15 * m),
+            (25 * m, 35 * m),
+            (36 * m, 40 * m),
+            (85 * m, 130 * m),
+        ];
+        assert_eq!(
+            free_intervals(0, 100 * m, events.into_iter()),
+            vec![(45 * m, 80 * m)]
+        );
+        assert_eq!(
+            free_intervals(0, 100 * m, std::iter::empty()),
+            vec![(0, 100 * m)]
+        );
+    }
 }

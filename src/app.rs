@@ -119,7 +119,7 @@ struct Desktop {
 
 impl Desktop {
     fn open_workbench(&mut self, page: Page) {
-        self.workbench.page = page;
+        self.workbench.navigate(page);
         self.workspace_open = true;
         self.focus_workspace = true;
         if !self.pinned {

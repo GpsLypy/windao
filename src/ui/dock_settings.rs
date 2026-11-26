@@ -12,9 +12,14 @@ pub(super) struct Editor {
 }
 
 impl Editor {
-    pub fn show(&mut self, ui: &mut Ui, settings: &mut Settings, displays: &[DisplayOption]) {
+    pub(super) fn appearance(
+        &mut self,
+        ui: &mut Ui,
+        settings: &mut Settings,
+        displays: &[DisplayOption],
+    ) {
         card(ui, |ui| {
-            subhead(ui, "胶囊外观");
+            subhead(ui, "位置与大小");
             Grid::new("capsule-geometry")
                 .spacing([16.0, 10.0])
                 .show(ui, |ui| {
@@ -63,14 +68,11 @@ impl Editor {
                 &mut settings.dock.oled_shift,
                 "收起时沿边缘轻微移动（OLED 像素偏移）",
             );
-            ui.checkbox(&mut settings.open_on_hover, "指针靠近时展开");
-            ui.checkbox(&mut settings.always_on_top, "置于其他窗口上方");
             ui.checkbox(
                 &mut settings.dock.exclude_from_capture,
                 "在截图和录屏中隐藏胶囊",
             )
             .on_hover_text("由 Windows 提供，效果取决于系统版本和采集工具。");
-            ui.checkbox(&mut settings.reduced_motion, "减少动态效果");
         });
         card(ui, |ui| {
             subhead(ui, "胶囊显示");
@@ -82,15 +84,18 @@ impl Editor {
                 ui.selectable_value(&mut settings.dock.clock_24h, false, "12 小时制");
             });
             ui.checkbox(&mut settings.dock.top_lyrics, "顶部收起时显示一行歌词");
-            ui.add_space(8.0);
-            ui.label(RichText::new("功能页面").strong());
-            ui.weak("拖动排序，或用方向按钮移动页面。");
-            page_editor(ui, &mut settings.dock);
         });
-        card(ui, |ui| self.avoidance(ui, &mut settings.dock));
     }
 
-    fn avoidance(&mut self, ui: &mut Ui, dock: &mut DockSettings) {
+    pub(super) fn pages(&self, ui: &mut Ui, dock: &mut DockSettings) {
+        card(ui, |ui| {
+            subhead(ui, "胶囊页面与顺序");
+            ui.weak("拖动排序，或用方向按钮移动页面。");
+            page_editor(ui, dock);
+        });
+    }
+
+    pub(super) fn avoidance(&mut self, ui: &mut Ui, dock: &mut DockSettings) {
         subhead(ui, "自动避让");
         ui.checkbox(&mut dock.avoid_browsers, "浏览器遮盖时收成贴边细线");
         ui.checkbox(&mut dock.hide_fullscreen, "前台应用全屏时隐藏");

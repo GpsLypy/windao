@@ -21,6 +21,10 @@ impl Page {
 
 impl Workbench {
     pub(super) fn navigation(&mut self, root: &mut Ui) {
+        if self.page == Page::Settings {
+            self.settings_navigation(root);
+            return;
+        }
         if root.available_width() < 805.0 {
             egui::Panel::top("workbench-navigation")
                 .frame(

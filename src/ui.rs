@@ -29,6 +29,7 @@ mod notes_extra;
 mod plugins;
 #[cfg(any(windows, test))]
 mod salary;
+mod settings;
 #[cfg(any(windows, test))]
 mod system_metrics;
 mod tasks;
@@ -467,6 +468,8 @@ pub struct Workbench {
     notice: Option<Result<String, String>>,
     taskbar_notifications_active: bool,
     taskbar_notifications_cleared: bool,
+    settings_section: settings::Section,
+    settings_return_page: Page,
     dock_settings: dock_settings::Editor,
     launch_at_login_request: Option<bool>,
     #[cfg(windows)]
@@ -561,6 +564,10 @@ impl Workbench {
                 bottom: 22,
             }))
             .show_inside(root, |ui| {
+                if self.page == Page::Settings {
+                    self.settings(ui, store, legacy, displays, windows);
+                    return;
+                }
                 ScrollArea::vertical()
                     .auto_shrink([false; 2])
                     .id_salt(self.page.title())
@@ -607,7 +614,7 @@ impl Workbench {
                         Page::Plugins => self.plugins.show(ui, store.directory(), || {
                             crate::windows::open_file(crate::windows::FileKind::Json)
                         }),
-                        Page::Settings => self.settings(ui, store, legacy, displays, windows),
+                        Page::Settings => unreachable!("settings own their category scroll area"),
                     });
             });
     }
@@ -738,8 +745,11 @@ impl Workbench {
         }
     }
 
-    fn navigate(&mut self, page: Page) {
+    pub(crate) fn navigate(&mut self, page: Page) {
         if self.page != page {
+            if page == Page::Settings {
+                self.settings_return_page = self.page;
+            }
             self.page = page;
             self.notice = None;
         }
@@ -780,72 +790,6 @@ impl Workbench {
                 ui.weak("有未保存的修改");
             }
         });
-    }
-
-    fn settings(
-        &mut self,
-        ui: &mut Ui,
-        store: &mut Store,
-        legacy: Option<&Path>,
-        displays: &[DisplayOption],
-        windows: &WindowsSettings,
-    ) {
-        title(ui, "设置");
-        self.import_legacy(ui, store, legacy);
-        let previous = store.state().settings.clone();
-        let mut settings = previous.clone();
-        self.dock_settings.show(ui, &mut settings, displays);
-        #[cfg(windows)]
-        self.backup(ui, store);
-        card(ui, |ui| {
-            subhead(ui, "通用");
-            match &windows.launch_at_login {
-                Ok(enabled) => {
-                    let mut enabled = *enabled;
-                    if ui.checkbox(&mut enabled, "登录 Windows 时启动").changed() {
-                        self.launch_at_login_request = Some(enabled);
-                    }
-                }
-                Err(error) => {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
-                }
-            }
-            ui.checkbox(&mut settings.reminders, "显示日程、待办与专注提醒");
-            if windows.hotkey_registered {
-                ui.weak("Ctrl + Shift + Space 呼出桌面胶囊");
-            } else {
-                ui.colored_label(ui.visuals().warn_fg_color, "Ctrl + Shift + Space 未注册");
-            }
-            if !windows.tray_registered {
-                ui.colored_label(ui.visuals().warn_fg_color, "通知区域图标不可用");
-            }
-        });
-        card(ui, |ui| {
-            subhead(ui, "外观");
-            egui::ComboBox::from_label("工作台主题")
-                .selected_text(appearance_label(&settings.appearance))
-                .show_ui(ui, |ui| {
-                    for appearance in [Appearance::System, Appearance::Dark, Appearance::Light] {
-                        let label = appearance_label(&appearance);
-                        ui.selectable_value(&mut settings.appearance, appearance, label);
-                    }
-                });
-        });
-        card(ui, |ui| {
-            subhead(ui, "关于 NotchCalendar");
-            ui.horizontal_wrapped(|ui| {
-                ui.label(concat!("NotchCalendar ", env!("CARGO_PKG_VERSION")));
-                ui.hyperlink_to("查看新版本", "https://github.com/GpsLypy/windao/releases");
-            });
-        });
-        if settings != previous
-            && let Err(error) = store.update(|state| {
-                state.settings = settings;
-                Ok(())
-            })
-        {
-            self.notice = Some(Err(error));
-        }
     }
 
     #[cfg(windows)]

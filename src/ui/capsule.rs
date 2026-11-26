@@ -880,11 +880,95 @@ fn day_overview(
     s: f32,
     action: &mut Option<ShellAction>,
 ) {
-    let events = |ui: &mut Ui| {
+    let selected_date = now.date_naive();
+    let timestamp = now.timestamp_millis();
+    let focus = &workspace.focus;
+    let next_event = workspace
+        .events
+        .iter()
+        .filter(|event| {
+            !event.all_day && event.end_at > timestamp && calendar::on_date(event, selected_date)
+        })
+        .min_by_key(|event| (event.start_at, event.id));
+    let lead = |ui: &mut Ui| {
+        let mut open = None;
         surface(ui, s, |ui| {
-            section_heading(ui, "日程", s);
-            schedule(ui, workspace, now.date_naive(), clock_24h, 2, s);
+            if focus.session_id.is_some() {
+                let running = focus.target_at.is_some();
+                section_heading(
+                    ui,
+                    if running {
+                        "正在计时"
+                    } else {
+                        "计时已暂停"
+                    },
+                    s,
+                );
+                caption(
+                    ui,
+                    focus::digits(focus.seconds_left(timestamp)),
+                    24.0 * s,
+                    INK,
+                    true,
+                );
+                if !focus.label.is_empty() {
+                    ui.add(egui::Label::new(&focus.label).truncate())
+                        .on_hover_text(&focus.label);
+                }
+                if ui
+                    .button(if running {
+                        "暂停计时"
+                    } else {
+                        "继续计时"
+                    })
+                    .clicked()
+                {
+                    open = Some(ShellAction::ToggleFocus);
+                }
+                if running {
+                    ui.ctx().request_repaint_after(Duration::from_secs(1));
+                }
+            } else if let Some(event) = next_event {
+                section_heading(
+                    ui,
+                    if event.start_at <= timestamp {
+                        "进行中"
+                    } else {
+                        "下一项日程"
+                    },
+                    s,
+                );
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(&event.title)
+                            .size(17.0 * s)
+                            .color(INK)
+                            .strong(),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(&event.title);
+                let begins = super::local_timestamp(event.start_at);
+                let ends = super::local_timestamp(event.end_at);
+                let time = match (begins, ends) {
+                    (Some(start), Some(end)) if start.date_naive() == end.date_naive() => {
+                        format!("{} – {}", clock(&start, clock_24h), clock(&end, clock_24h))
+                    }
+                    _ => calendar::event_time(event),
+                };
+                caption(ui, time, 12.0 * s, CAPTION, false);
+                if ui.button("打开日历").clicked() {
+                    open = Some(ShellAction::OpenCalendar(selected_date));
+                }
+            } else {
+                section_heading(ui, "今日日程", s);
+                schedule(ui, workspace, selected_date, clock_24h, 2, s);
+                if ui.button("打开日历").clicked() {
+                    open = Some(ShellAction::OpenCalendar(selected_date));
+                }
+            }
         });
+        open
     };
     let mut todos = |ui: &mut Ui| {
         surface(ui, s, |ui| {
@@ -892,14 +976,19 @@ fn day_overview(
             task_rows(ui, tasks, 2, s, action);
         });
     };
-    if ui.available_width() >= 430.0 * s {
+    let picked = if ui.available_width() >= 430.0 * s {
         ui.columns(2, |columns| {
-            events(&mut columns[0]);
+            let picked = lead(&mut columns[0]);
             todos(&mut columns[1]);
-        });
+            picked
+        })
     } else {
-        events(ui);
+        let picked = lead(ui);
         todos(ui);
+        picked
+    };
+    if picked.is_some() {
+        *action = picked;
     }
 }
 
@@ -988,6 +1077,66 @@ fn focus_elapsed(timer: &Focus, timestamp: i64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn today_overview_can_resume_a_paused_session() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let now = Local::now();
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(directory.path().into()).unwrap();
+        store
+            .update(|state| {
+                state.focus.start(now.timestamp_millis() - 10_000);
+                state.focus.pause(now.timestamp_millis());
+                Ok(())
+            })
+            .unwrap();
+        let frame = |events| {
+            let mut action = None;
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(512.0, 210.0))),
+                events,
+                ..Default::default()
+            };
+            let output = ctx.run_ui(input, |ui| {
+                day_overview(ui, store.state(), &now, true, &[], 1.0, &mut action)
+            });
+            (output, action)
+        };
+        let (shown, action) = frame(vec![]);
+        assert!(action.is_none());
+        let bounds = shown
+            .platform_output
+            .accesskit_update
+            .unwrap()
+            .nodes
+            .into_iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some("继续计时"))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .expect("paused session has a resume action");
+        let pos = pos2(
+            (bounds.x0 + bounds.x1) as f32 / 2.0,
+            (bounds.y0 + bounds.y1) as f32 / 2.0,
+        );
+        for pressed in [true, false] {
+            let (_, action) = frame(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            if !pressed {
+                assert!(matches!(action, Some(ShellAction::ToggleFocus)));
+            }
+        }
+    }
 
     #[test]
     fn avoidance_strip_ignores_hover_but_opens_on_click_and_hides_in_fullscreen() {
