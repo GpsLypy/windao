@@ -17,7 +17,7 @@
 | 天气 | Open-Meteo、自动定位、15 分钟刷新、缓存、和风天气及可选常驻温度。[天气][weather] · [和风][qweather] | 本次源码支持两个天气源、湿度与风速、日出日落、七日预报、按来源与城市隔离的离线缓存、可关闭自动刷新（Open-Meteo 每 15 分钟、和风实况每小时）、手动刷新冷却 30 秒、普通失败两分钟后重试、双服务主动网络定位、回车搜索与确认城市、五个收藏城市、可选胶囊天气图标和温度、和风天气本机月请求统计与上限，以及 6 小时七日预报缓存。[天气页](../src/ui/weather.rs) | 和风天气真实凭据、Windows 网络定位与常驻温度界面待验。 |
 | 性能与无线设备 | 性能、设备电量、常驻指标，电源、网络、音量和输入事件提示。[性能][perf] · [蓝牙][wireless] | 性能页显示 CPU、内存和网速，可选显示电源、电量、大小写锁定、输入语言及横向胶囊常驻指标。可选短提示涵盖网络、系统主音量／静音和蓝牙变化；无线页读取配对设备和兼容 BLE 标准电量。[性能](../src/ui/system_metrics.rs) · [状态变化](../src/windows/status_changes.rs) · [蓝牙](../src/ui/wireless.rs) | 蓝牙设备覆盖、音频切换和 Windows 输入法待实机验证。厂商私有电量协议尚未覆盖。 |
 | 插件与内置工具 | 插件目录、本地安装和升级、内置兼容包。[市场][market] · [安装][installed] | 目录、随包模板及本地 JSON 安装；可检查目录版并手动更新，保留启用状态及匹配的勾选项。工作台另有世界时钟、金价、工时收入与纪念日。[插件](../src/ui/plugins.rs) · [组件格式](widget-manifest.md) | 内置 JSON 组件与岛仔原生代码、皮肤和硬件扩展包有格式差异。 |
-| AI 额度 | Codex、Claude、Kimi、Grok Bot、Gemini、GLM、WorkBuddy、DeepSeek、Kiro、中转站，标签更新另外列出 Antigravity CLI。[版本说明][release] | AI 用量页读取 Codex、Claude 本地用量。可绑定独立 Codex 目录、Claude 桌面版组织用量历史与官方状态栏。账户页支持 DeepSeek／Kimi API 余额、GLM Coding Plan、Kimi Code、Kiro、WorkBuddy、中转站，以及 Gemini、Grok、Claude 的报告来源。[本地用量](../src/ai_usage.rs) · [账号](../src/ui/provider_balances.rs) | 余额、用量、订阅限额按来源显示。Gemini／Grok 的官网可见百分比可由分享扩展写入手选的账号文件。能确认页面账号时，可开启每 5 分钟刷新；离开页面、切换账号或失去写权限后停用。未登录探测仅验证鉴权响应，实际账户额度、Grok 登录页面及 Antigravity CLI 需逐项核实。 |
+| AI 额度 | Codex、Claude、Kimi、Grok Bot、Gemini、GLM、WorkBuddy、DeepSeek、Kiro、中转站，标签更新另外列出 Antigravity CLI。[版本说明][release] | AI 用量页读取 Codex、Claude 本地用量。可绑定独立 Codex 目录、Claude 桌面版组织用量历史、Claude Code 与 Antigravity CLI 官方状态栏。Antigravity 按额度分组显示剩余比例或数量、重置时间及当前模型。[Google 状态栏格式][agy]。账户页支持 DeepSeek／Kimi API 余额、GLM Coding Plan、Kimi Code、Kiro、WorkBuddy、中转站，以及 Gemini、Grok、Claude 的报告来源。[本地用量](../src/ai_usage.rs) · [账号](../src/ui/provider_balances.rs) | 中转站支持直接导入 CC Switch 通用、New API、Sub2API 模板，以及同源 GET 与数值换算的自定义查询。Gemini／Grok 的官网可见百分比可由分享扩展写入手选的账号文件。能确认页面账号时，可开启每 5 分钟刷新；离开页面、切换账号或失去写权限后停用。未登录探测仅验证鉴权响应，实际账户额度、Grok 登录页面及已登录 Antigravity 实机回调待验。 |
 | 安装与更新 | Windows 10/11 x64 安装程序与 ZIP、应用内下载校验更新、诊断包、D3D12 回退。[更新][updates] · [诊断][diagnostics] | 提供 Windows 10 2004+ / 11 x64 的 NSIS 与 ZIP 构建。可通过 Windows CI 获取专供 Windows 11 测试的未签名 MSIX，另支持自行签名构建、应用内校验下载更新、诊断 ZIP、OpenGL 初始化失败时回退 D3D12。[打包](../package.py) · [MSIX](../build-msix.ps1) · [更新](../src/updates/desktop.rs) · [渲染](../src/app.rs) | 安装器升级与进程交接、GPU 回退、MSIX 签名安装及真实授权待 Windows 验证。Windows 10 的系统兼容性待验。 |
 
 [release]: https://github.com/Renly1994/xiaotang-daozai/releases/tag/v0.6.70
@@ -42,3 +42,5 @@
 [plugins]: https://github.com/Renly1994/xiaotang-daozai/blob/0615f19786d3d5b6b4c2c74be987fbe855e9fe03/docs/plugins/local-install.md
 [updates]: https://github.com/Renly1994/xiaotang-daozai/blob/0615f19786d3d5b6b4c2c74be987fbe855e9fe03/src/updates.rs
 [diagnostics]: https://github.com/Renly1994/xiaotang-daozai/blob/0615f19786d3d5b6b4c2c74be987fbe855e9fe03/src/diagnostics_tool.rs
+
+[agy]: https://antigravity.google/docs/cli/statusline/

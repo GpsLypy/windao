@@ -42,7 +42,12 @@ mod app;
 #[cfg(windows)]
 fn main() {
     let mut args = std::env::args_os().skip(1);
-    if args.next().as_deref() == Some(std::ffi::OsStr::new("--claude-statusline")) {
+    let statusline = match args.next().and_then(|a| a.into_string().ok()).as_deref() {
+        Some("--claude-statusline") => Some(provider_balances::Provider::ClaudeStatus),
+        Some("--antigravity-statusline") => Some(provider_balances::Provider::Antigravity),
+        _ => None,
+    };
+    if let Some(provider) = statusline {
         let Some(id) = args
             .next()
             .and_then(|a| a.into_string().ok())
@@ -54,6 +59,7 @@ fn main() {
             std::process::exit(1);
         };
         if provider_balances::statusline::receive(
+            provider,
             std::io::stdin().lock(),
             std::io::stdout().lock(),
             &dir.join("WinDao"),

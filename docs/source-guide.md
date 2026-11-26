@@ -25,10 +25,23 @@
 | Codex | 添加本机账户并选择含 sessions 的 Codex 数据目录，可为不同工作配置选不同目录。订阅窗口和 token 使用记录来自该目录 |
 | Claude | 在桌面版打开用量页面后选择 plan-usage-history.json，或在 Claude Code 账户中连接官方状态栏。已有自定义状态栏时可复制命令自行组合 |
 | DeepSeek、Kimi API、Kimi Code、GLM Coding Plan | 按服务及地区建账户。API 余额使用该账户的 API Key，订阅窗口使用对应套餐凭据 |
+| Antigravity CLI | 连接官方状态栏或选择自己的用量 JSON，查看模型、剩余额度及重置时间 |
 | WorkBuddy | 在账户中点浏览器授权，完成后回到应用查看剩余积分 |
 | Kiro | 按美国东部或欧洲中部建立账户，填写已授权的访问令牌。过期后重新连接 |
 | Gemini、Grok Bot | 点击「准备浏览器用量分享工具」，在 Chrome 或 Edge 扩展管理中加载打开的文件夹。在官方用量页面分享数据并选择对应账户文件 |
-| 中转站 | 填站点 HTTPS 地址和 Key，常见接口会自动识别。New API 用户 Token 还需用户 ID。自定义接口可填写完整 HTTPS 地址、JSON 字段路径和单位 |
+| 中转站 | 填站点 HTTPS 地址和 Key，常见接口会自动识别。New API 用户 Token 还需用户 ID。自定义接口可填写完整 HTTPS 地址、JSON 字段路径和单位。也可导入 CC Switch 通用、New API、Sub2API 模板，以及只含同站 GET 与数值运算的受支持配置 |
+
+
+### 导入 CC Switch 中转站配置
+
+在「AI 用量 → 添加账户 → 中转站 → 导入 CC Switch 用量配置」选择一个 JSON 文件，或粘贴脚本。支持单个 `usage_script` 对象、含 `usage_script` 的对象及服务商的 `meta.usage_script`。脚本可用配置中的 `baseUrl`，也可在账户地址栏填写站点。保存后请核对显示的完整查询地址，再输入此账户的 API Key 或访问令牌。勾选加密保存后，查询成功时 Windows 会为当前用户保存凭据。
+
+- 通用、New API 和 Sub2API 支持官方模板。New API 读取用户 ID 和账户 Token，按模板换算余额、已用量和总额。Sub2API 支持带或不带 `/v1` 的站点地址，返回无限额订阅时显示套餐名称。
+- 自定义请求支持同源 HTTPS GET，地址可使用 `{{baseUrl}}` 或完整地址。凭据占位符支持 Authorization 的 Bearer 或直接值、X-Api-Key 的 `{{apiKey}}`，以及 New-Api-User 的 `{{userId}}`。Authorization 可使用 `{{apiKey}}` 或 `{{accessToken}}`。配置内的账户密钥不会被导入。
+- 自定义提取函数可直接返回 `remaining`、固定字符串 `unit` 和可选的 `used`、`total`、布尔字段 `isValid`。数值可从 `response` 读取嵌套字段与数组下标，并用括号和四则运算换算，例如 `(response.data.limit - response.data.used) / 100`。
+- 每个配置最多 32 KiB。仅接受一个查询请求，查询参数、跳转、自定义函数调用和通用 JavaScript 控制流均不支持。账户固定后遵循胶囊的五分钟刷新周期。
+
+[CC Switch 官方用量查询模板](https://github.com/farion1231/cc-switch/blob/de14050163aca0d8341c0b66f25c8af2d65e268a/docs/user-manual/en/2-providers/2.5-usage-query.md)
 
 ## 桌面工具
 

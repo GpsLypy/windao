@@ -2,8 +2,10 @@
 //! zai-org/zai-coding-plugins glm-plan-usage plugin's quota/limit protocol.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+pub(crate) mod antigravity;
 #[cfg(any(test, windows))]
 pub(crate) mod authorized;
+pub(crate) mod cc_switch;
 pub(crate) mod local_profiles;
 pub(crate) mod profiles;
 pub(crate) mod relay;
@@ -25,13 +27,14 @@ pub(crate) enum Provider {
     WorkBuddy,
     Gemini,
     ClaudeStatus,
+    Antigravity,
     CodexLocal,
     ClaudeDesktop,
     Relay,
 }
 
 impl Provider {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::CodexLocal,
         Self::ClaudeDesktop,
         Self::DeepSeek,
@@ -46,6 +49,7 @@ impl Provider {
         Self::WorkBuddy,
         Self::Gemini,
         Self::ClaudeStatus,
+        Self::Antigravity,
         Self::Relay,
     ];
 
@@ -61,6 +65,7 @@ impl Provider {
             Self::CodexLocal => "Codex 本机账户",
             Self::ClaudeDesktop => "Claude 桌面版",
             Self::ClaudeStatus => "Claude Code 状态栏",
+            Self::Antigravity => "Antigravity CLI 状态栏",
             Self::DeepSeek => "DeepSeek API",
             Self::GlmChina => "智谱 GLM Coding Plan",
             Self::GlmGlobal => "Z.AI GLM Coding Plan",
@@ -79,6 +84,7 @@ impl Provider {
                 "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus"
             }
             Self::Gemini
+            | Self::Antigravity
             | Self::ClaudeStatus
             | Self::CodexLocal
             | Self::ClaudeDesktop
@@ -95,6 +101,7 @@ impl Provider {
         matches!(
             self,
             Self::Gemini
+                | Self::Antigravity
                 | Self::ClaudeStatus
                 | Self::CodexLocal
                 | Self::ClaudeDesktop
@@ -113,6 +120,7 @@ impl Provider {
             Self::KiroUs | Self::KiroEu => "kiro.dpapi",
             Self::WorkBuddy => "workbuddy.dpapi",
             Self::Gemini
+            | Self::Antigravity
             | Self::ClaudeStatus
             | Self::CodexLocal
             | Self::ClaudeDesktop
@@ -233,6 +241,7 @@ pub(crate) fn response(provider: Provider, status: u16, body: &str) -> Result<Re
             })
         }
         Provider::GlmChina | Provider::GlmGlobal => quota_response(&v),
+        Provider::Antigravity => antigravity::parse(&v),
         other => subscriptions::parse(other, &v),
     }
 }
@@ -359,6 +368,14 @@ pub(super) mod connection {
         header.push_str(key);
         if provider == Provider::Relay {
             let base = relay::base(&profile.endpoint)?;
+            if let Some(query) = &profile.cc_switch {
+                let (status, body) = query
+                    .request(key, &header, |headers| {
+                        crate::calendar_sync::authorized_json("GET", &base, headers, "")
+                    })
+                    .map_err(|_| "连接 CC Switch 查询地址失败。")?;
+                return query.read(status, &body);
+            }
             if let Some(user) = profile.relay_user {
                 let user = user.to_string();
                 return relay::user_balance(&base, |url, needs_token| {

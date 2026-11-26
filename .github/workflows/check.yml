@@ -41,3 +41,15 @@ jobs:
           WINDAO_RUNNER_KIND: ${{ runner.environment }}
         shell: pwsh
         run: ./.github/workflows/test-installer.ps1
+      - name: Package release and verify the portable application
+        shell: pwsh
+        run: ./.github/workflows/package-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Windows-public-downloads
+          path: |
+            release/*.zip
+            release/*-Setup.exe
+            release/*.sha256
+          if-no-files-found: error
+          retention-days: 7

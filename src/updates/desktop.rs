@@ -122,7 +122,7 @@ impl Updates {
             }
             if let Some(release)=self.release.clone() {
                 if packaged {
-                    ui.hyperlink_to("打开新版发布页，选择 MSIX 安装包",format!("{}/releases/tag/v{}", super::REPO,release.version));
+                    ui.hyperlink_to("查看新版发布说明与 MSIX 测试入口",format!("{}/releases/tag/v{}", super::REPO,release.version));
                 } else if let Some(file)=&self.verified {
                     if ui.button("退出并安装更新").clicked() {
                         match Command::new(&file.path).arg("/UPDATE").spawn() {

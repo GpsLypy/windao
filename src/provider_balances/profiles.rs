@@ -16,6 +16,8 @@ pub(crate) struct Profile {
     pub endpoint: String,
     #[serde(default)]
     pub balance_field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cc_switch: Option<super::cc_switch::Query>,
     #[serde(default)]
     pub relay_user: Option<u64>,
     #[serde(default)]
@@ -95,6 +97,7 @@ impl Profiles {
             color,
             endpoint,
             balance_field: String::new(),
+            cc_switch: None,
             relay_user: None,
             unit: String::new(),
             report: None,

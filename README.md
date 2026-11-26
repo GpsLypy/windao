@@ -106,9 +106,10 @@ QQ 通知正文需要带包身份的 MSIX、Windows 通知访问授权，以及 
 | Codex、Claude | 选择 Codex 数据目录、Claude 桌面版用量历史，或连接 Claude Code 官方状态栏。支持为不同来源单独建账户 |
 | DeepSeek、Kimi | 用 API Key 查余额。Kimi Code 订阅用量单独连接 |
 | GLM Coding Plan | 选择智谱或 Z.AI，用套餐 Key 查询 |
+| Antigravity CLI | 连接官方状态栏，按模型显示剩余额度与重置时间 |
 | WorkBuddy、Kiro | WorkBuddy 在浏览器授权后查看积分。Kiro 使用用户提供的访问令牌，支持美国东部和欧洲中部 |
 | Gemini、Grok Bot | 在登录后的官方用量页分享可见额度，再在账户中选择生成的 JSON |
-| 中转站 | 支持通用余额、New API、One API、Sub2API，以及自定义 HTTPS 地址与 JSON 余额字段 |
+| 中转站 | 支持通用余额、New API、One API、Sub2API，支持自定义 HTTPS 接口与 JSON 余额字段，也可直接导入 CC Switch 的通用、New API、Sub2API 模板及含数值运算的自定义配置 |
 
 在「AI 用量」开启本机记录，可查看 Codex 和 Claude Code 今天及近 7 天的 token。Codex 有配额记录时还显示各窗口的已用比例和重置时间。收起的横向胶囊可显示今日合计。
 

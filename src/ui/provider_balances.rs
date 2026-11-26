@@ -1,3 +1,5 @@
+mod cc_switch;
+
 use crate::provider_balances::{
     Provider, Reading, authorized, connection,
     profiles::{Profile, Profiles, read_report},
@@ -51,6 +53,7 @@ pub(super) struct ProviderBalances {
     color: usize,
     endpoint: String,
     balance_field: String,
+    cc_switch: cc_switch::ImportForm,
     relay_user: String,
     unit: String,
     key: Zeroizing<String>,
@@ -324,6 +327,7 @@ impl ProviderBalances {
                             .hint_text("New API 用户 Token 查询：填写对应用户 ID")
                             .char_limit(20),
                     );
+                    self.cc_switch.show(ui, &mut self.notice);
                     egui::CollapsingHeader::new("自定义余额字段").show(ui,|ui|{
                         ui.weak("填写完整查询地址和 JSON 字段即可读取自定义余额，留空会识别常用中转站接口。");
                         ui.add(egui::TextEdit::singleline(&mut self.balance_field).hint_text("字段路径，例如 /data/balance").char_limit(200));
@@ -332,45 +336,55 @@ impl ProviderBalances {
                 }
                 if ui.button("保存账户").clicked() {
                     let mut next = self.profiles.clone();
-                    match next
-                        .add(self.provider, &self.name, self.color, &self.endpoint)
-                        .and_then(|id| {
-                            if self.provider == Provider::Relay
-                                && !self.relay_user.trim().is_empty()
-                            {
-                                if !self.balance_field.trim().is_empty() {
-                                    return Err("用户 Token 和自定义余额字段请选择一种查询方式。");
-                                }
-                                let user = self
-                                    .relay_user
-                                    .trim()
-                                    .parse::<u64>()
-                                    .ok()
-                                    .filter(|n| *n > 0)
-                                    .ok_or("New API 用户 ID 应是大于零的整数。")?;
-                                next.accounts.last_mut().expect("new account").relay_user =
-                                    Some(user);
+                    let imported = if self.provider == Provider::Relay {
+                        self.cc_switch.import(&self.endpoint, &self.relay_user)
+                    } else {
+                        Ok(None)
+                    };
+                    match imported.and_then(|imported| {
+                        let endpoint = imported
+                            .as_ref()
+                            .map_or(self.endpoint.as_str(), |(url, _)| url.as_str());
+                        let id = next.add(self.provider, &self.name, self.color, endpoint)?;
+                        if let Some((_, query)) = imported {
+                            if !self.balance_field.trim().is_empty() {
+                                return Err("请选择 CC Switch 配置或自定义余额字段中的一种。");
                             }
-                            if self.provider == Provider::Relay && !self.balance_field.is_empty() {
-                                if !self.balance_field.starts_with('/')
-                                    || self.unit.trim().is_empty()
-                                {
-                                    return Err("请填写以 / 开头的字段路径及对应单位。");
-                                }
-                                let profile =
-                                    next.accounts.last_mut().expect("newly added account");
-                                profile.balance_field = self.balance_field.trim().into();
-                                profile.unit = self.unit.trim().into();
-                            }
+                            next.accounts.last_mut().expect("new account").cc_switch = Some(query);
                             next.save(dir)?;
-                            Ok(id)
-                        }) {
+                            return Ok(id);
+                        }
+                        if self.provider == Provider::Relay && !self.relay_user.trim().is_empty() {
+                            if !self.balance_field.trim().is_empty() {
+                                return Err("用户 Token 和自定义余额字段请选择一种查询方式。");
+                            }
+                            let user = self
+                                .relay_user
+                                .trim()
+                                .parse::<u64>()
+                                .ok()
+                                .filter(|n| *n > 0)
+                                .ok_or("New API 用户 ID 应是大于零的整数。")?;
+                            next.accounts.last_mut().expect("new account").relay_user = Some(user);
+                        }
+                        if self.provider == Provider::Relay && !self.balance_field.is_empty() {
+                            if !self.balance_field.starts_with('/') || self.unit.trim().is_empty() {
+                                return Err("请填写以 / 开头的字段路径及对应单位。");
+                            }
+                            let profile = next.accounts.last_mut().expect("newly added account");
+                            profile.balance_field = self.balance_field.trim().into();
+                            profile.unit = self.unit.trim().into();
+                        }
+                        next.save(dir)?;
+                        Ok(id)
+                    }) {
                         Ok(id) => {
                             self.profiles = next;
                             self.selected = Some(id);
                             self.name.clear();
                             self.endpoint.clear();
                             self.balance_field.clear();
+                            self.cc_switch = cc_switch::ImportForm::default();
                             self.relay_user.clear();
                             self.unit.clear();
                             self.adding = false;
@@ -431,9 +445,9 @@ impl ProviderBalances {
             return;
         }
         let mut action = None;
-        if p.provider == Provider::ClaudeStatus {
-            if ui.button("连接 Claude Code 状态栏").clicked() {
-                match crate::provider_balances::statusline::configure(p.id, true) {
+        if matches!(p.provider, Provider::ClaudeStatus | Provider::Antigravity) {
+            if ui.button(format!("连接{}", p.provider.title())).clicked() {
+                match crate::provider_balances::statusline::configure(p.provider, p.id, true) {
                     Ok(()) => {
                         self.update(dir, |ps| {
                             if let Some(a) = ps.accounts.iter_mut().find(|a| a.id == p.id) {
@@ -441,13 +455,13 @@ impl ProviderBalances {
                                     Some(dir.join("ai-statusline").join(format!("{}.json", p.id)));
                             }
                         });
-                        self.notice = Some("下次 Claude Code 更新状态栏时会写入用量。".into());
+                        self.notice = Some("下次 CLI 更新状态栏时会写入用量。".into());
                     }
                     Err(error) => self.notice = Some(error),
                 }
             }
             if ui.button("复制状态栏命令").clicked()
-                && let Ok(cmd) = crate::provider_balances::statusline::command(p.id)
+                && let Ok(cmd) = crate::provider_balances::statusline::command(p.provider, p.id)
             {
                 ui.ctx().copy_text(cmd);
             }
@@ -479,6 +493,7 @@ impl ProviderBalances {
                 }
                 let hint = match p.provider {
                     Provider::KiroUs | Provider::KiroEu => "账户授权的访问令牌",
+                    Provider::Relay if p.cc_switch.is_some() => "此配置使用的 API Key 或访问令牌",
                     Provider::Relay if p.relay_user.is_some() => "New API 用户 Token",
                     Provider::KimiCode => "Kimi Code 套餐 Key 或访问令牌",
                     _ => "服务商 API Key",
@@ -545,8 +560,9 @@ impl ProviderBalances {
             self.start(ui.ctx(), dir, p, action);
         }
         if ui.button("移除此账户").clicked() {
-            if p.provider == Provider::ClaudeStatus
-                && let Err(e) = crate::provider_balances::statusline::configure(p.id, false)
+            if matches!(p.provider, Provider::ClaudeStatus | Provider::Antigravity)
+                && let Err(e) =
+                    crate::provider_balances::statusline::configure(p.provider, p.id, false)
             {
                 self.notice = Some(e);
                 return;
