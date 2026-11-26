@@ -13,6 +13,8 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 
 NATIVE = Path(__file__).resolve().parent
+PRODUCT = "NotchCalendar"
+APP_EXE = f"{PRODUCT}.exe"
 
 
 def check_executable(path: Path) -> None:
@@ -49,9 +51,10 @@ def build_installer(
     if compiler is None:
         raise FileNotFoundError(f"NSIS compiler not found: {makensis}")
     option = "/" if os.name == "nt" else "-"
+    base_version = version.split("+", 1)[0].split("-", 1)[0]
     with tempfile.TemporaryDirectory(prefix="windao-setup-", dir=output.parent) as temp:
         work = Path(temp)
-        shutil.copyfile(executable, work / "WinDao.exe")
+        shutil.copyfile(executable, work / APP_EXE)
         shutil.copyfile(NATIVE / "installer.nsi", work / "installer.nsi")
         shutil.copyfile(NATIVE / "LICENSE", work / "LICENSE.txt")
         shutil.copyfile(NATIVE / "THIRD_PARTY_NOTICES.txt", work / "THIRD_PARTY_NOTICES.txt")
@@ -67,12 +70,13 @@ def build_installer(
                 f"{option}INPUTCHARSET",
                 "UTF8",
                 f"{option}DPRODUCT_VERSION={version}",
+                f"{option}DPRODUCT_FILE_VERSION={base_version}.0",
                 "installer.nsi",
             ],
             cwd=work,
             check=True,
         )
-        (work / "WinDao-Setup.exe").replace(output)
+        (work / f"{PRODUCT}-Setup.exe").replace(output)
     write_checksum(output)
 
 
@@ -87,9 +91,9 @@ def main() -> None:
         version = tomllib.load(manifest)["package"]["version"]
     release = NATIVE / "release"
     release.mkdir(exist_ok=True)
-    archive = release / f"WinDao-Windows-{version}-x64.zip"
+    archive = release / f"{PRODUCT}-Windows-{version}-x64.zip"
     with ZipFile(archive, "w", compression=ZIP_DEFLATED, compresslevel=9) as bundle:
-        bundle.write(args.executable, "WinDao.exe")
+        bundle.write(args.executable, APP_EXE)
         bundle.write(NATIVE / "docs" / "source-guide.md", "README.md")
         bundle.write(NATIVE / "docs" / "widget-manifest.md", "widget-manifest.md")
         bundle.write(NATIVE / "LICENSE", "LICENSE.txt")
@@ -100,11 +104,11 @@ def main() -> None:
         bad_member = bundle.testzip()
         if bad_member:
             raise ValueError(f"Archive integrity check failed for {bad_member}.")
-        if bundle.getinfo("WinDao.exe").file_size != args.executable.stat().st_size:
+        if bundle.getinfo(APP_EXE).file_size != args.executable.stat().st_size:
             raise ValueError("The archived executable differs in size from the original.")
     write_checksum(archive)
     if args.makensis:
-        installer = release / f"WinDao-Windows-{version}-x64-Setup.exe"
+        installer = release / f"{PRODUCT}-Windows-{version}-x64-Setup.exe"
         build_installer(args.executable, installer, version, args.makensis)
 
 

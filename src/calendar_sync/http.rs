@@ -37,7 +37,7 @@ pub(super) struct Http {
 
 impl Http {
     pub(super) fn open() -> Result<Self> {
-        let agent = wide("WinDao");
+        let agent = wide("NotchCalendar");
         let session = Handle::new(unsafe {
             WinHttpOpen(
                 agent.as_ptr(),

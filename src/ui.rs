@@ -525,7 +525,7 @@ impl Workbench {
                     Color32::from_rgb(236, 238, 242)
                 }))
                 .show_inside(root, |ui| {
-                    ui.label(RichText::new("WinDao").size(17.0).strong());
+                    ui.label(RichText::new("NotchCalendar").size(17.0).strong());
                     page_shortcut_hint(ui);
                     ui.add_space(8.0);
                     ScrollArea::vertical()
@@ -693,8 +693,8 @@ impl Workbench {
             }
         });
         ui.add_space(12.0);
-        ui.heading("WinDao 提醒");
-        ui.weak("最近 100 条由 WinDao 发出的提醒。");
+        ui.heading("NotchCalendar 提醒");
+        ui.weak("最近 100 条由 NotchCalendar 发出的提醒。");
         ui.add_space(12.0);
         if store.state().notifications.is_empty() {
             card(ui, |ui| {
@@ -923,9 +923,9 @@ impl Workbench {
                 });
         });
         card(ui, |ui| {
-            subhead(ui, "关于 WinDao");
+            subhead(ui, "关于 NotchCalendar");
             ui.horizontal_wrapped(|ui| {
-                ui.label(concat!("WinDao ", env!("CARGO_PKG_VERSION")));
+                ui.label(concat!("NotchCalendar ", env!("CARGO_PKG_VERSION")));
                 ui.hyperlink_to("查看新版本", "https://github.com/GpsLypy/windao/releases");
             });
         });
@@ -984,7 +984,7 @@ impl Workbench {
             }
             ui.horizontal_wrapped(|ui| {
                 if ui.button("导出备份").clicked() {
-                    match windows::save_file(FileKind::Backup, "WinDao-Backup.json") {
+                    match windows::save_file(FileKind::Backup, "NotchCalendar-Backup.json") {
                         Ok(Some(path)) => {
                             self.notice =
                                 Some(backup::export(store, &path).map(|()| "备份已导出".into()));

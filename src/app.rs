@@ -13,7 +13,7 @@ use crate::ui::{
 use crate::windows::{self, Action, AvoidanceRules, Instance, LayoutRequest, Occlusion, Shell};
 use crate::workspace::{Store, TaskStatus};
 
-const TITLE: &str = "WinDao";
+const TITLE: &str = "NotchCalendar";
 pub(crate) const WORKBENCH_VIEWPORT_KEY: &str = "windao-workbench";
 const FOLD_TIME: Duration = Duration::from_millis(360);
 const AUTO_FOLD_TIME: Duration = Duration::from_millis(440);
@@ -87,7 +87,7 @@ pub fn run() -> Result<(), String> {
             }))
         }),
     )
-    .map_err(|error| format!("无法启动 WinDao（{error}）"))
+    .map_err(|error| format!("无法启动 {TITLE}（{error}）"))
 }
 
 struct Desktop {

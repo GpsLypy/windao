@@ -250,7 +250,7 @@ impl Plugins {
                             self.pending_import = Some(manifest);
                             self.error = None;
                         }
-                        Ok(_) => self.error = Some("此组件标识前缀由 WinDao 保留。"),
+                        Ok(_) => self.error = Some("此组件标识前缀由 NotchCalendar 保留。"),
                         Err(error) => self.error = Some(error),
                     },
                     Err(_) => self.error = Some("无法读取组件文件。"),
@@ -363,7 +363,7 @@ impl Plugins {
 
         #[cfg(windows)]
         {
-            subhead(ui, "WinDao 在线目录");
+            subhead(ui, "NotchCalendar 在线目录");
             self.online.controls(ui);
             for manifest in &self.online.widgets {
                 ui.push_id(&manifest.id, |ui| {

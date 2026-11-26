@@ -23,6 +23,9 @@ tempfile = "3"
 url = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
 
+[build-dependencies]
+find-msvc-tools = "0.1"
+
 [target.'cfg(windows)'.dependencies]
 aes-gcm = "0.10"
 arboard = { version = "3.7", default-features = false }

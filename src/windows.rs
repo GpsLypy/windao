@@ -117,7 +117,7 @@ pub fn show_error(message: &str) {
         MessageBoxW(
             null_mut(),
             wide.as_ptr(),
-            w!("WinDao"),
+            w!("NotchCalendar"),
             MB_OK | MB_ICONERROR,
         );
     }
@@ -221,7 +221,7 @@ fn choose_files(
     let (filter, extension) = match kind {
         FileKind::Calendar => (w!("iCalendar (*.ics)\0*.ics\0所有文件\0*.*\0"), w!("ics")),
         FileKind::Backup => (
-            w!("WinDao 备份 (*.json)\0*.json\0所有文件\0*.*\0"),
+            w!("NotchCalendar 备份 (*.json)\0*.json\0所有文件\0*.*\0"),
             w!("json"),
         ),
         FileKind::Json => (w!("JSON (*.json)\0*.json\0所有文件\0*.*\0"), w!("json")),
@@ -1262,7 +1262,7 @@ fn add_tray(hwnd: HWND, events: &Events) -> bool {
     let mut icon = tray_data(hwnd);
     icon.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
     icon.uCallbackMessage = TRAY_MESSAGE;
-    copy_utf16(&mut icon.szTip, "WinDao");
+    copy_utf16(&mut icon.szTip, "NotchCalendar");
     unsafe {
         icon.hIcon = events.tray_icon.as_ref().map_or_else(
             || SendMessageW(hwnd, WM_GETICON, ICON_SMALL as WPARAM, 0) as HICON,
@@ -1394,7 +1394,7 @@ fn tray_menu(hwnd: HWND, coords: WPARAM) -> Option<Action> {
         AppendMenuW(menu, MF_STRING, 2, w!("打开主窗口"));
         AppendMenuW(menu, MF_STRING, 3, w!("设置"));
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
-        AppendMenuW(menu, MF_STRING, 4, w!("退出 WinDao"));
+        AppendMenuW(menu, MF_STRING, 4, w!("退出 NotchCalendar"));
         // Shell_NotifyIcon v4 passes screen coordinates in wParam, including
         // keyboard invocation. The foreground call lets outside clicks close the menu.
         let x = coords as u16 as i16 as i32;

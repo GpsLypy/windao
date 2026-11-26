@@ -1395,7 +1395,7 @@ mod tests {
         assert_eq!(
             reminders,
             vec![Reminder {
-                title: "WinDao 提醒".into(),
+                title: "NotchCalendar 提醒".into(),
                 body: "1 场日程已开始，1 项待办需要关注".into(),
             }]
         );

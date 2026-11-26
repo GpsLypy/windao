@@ -160,7 +160,7 @@ impl Calendar {
                 }
             }
             if ui.button("导出 ICS").clicked() {
-                match windows::save_file(FileKind::Calendar, "WinDao.ics") {
+                match windows::save_file(FileKind::Calendar, "NotchCalendar.ics") {
                     Ok(Some(path)) => {
                         *notice = Some(
                             calendar_exchange::export_file(

@@ -237,7 +237,7 @@ fn summarize(pending: &[&Scheduled]) -> Option<Reminder> {
         (events, tasks) => format!("{events} 场日程已开始，{tasks} 项待办需要关注"),
     };
     Some(Reminder {
-        title: "WinDao 提醒".into(),
+        title: "NotchCalendar 提醒".into(),
         body,
     })
 }

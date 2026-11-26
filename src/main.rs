@@ -38,5 +38,5 @@ fn main() {
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("WinDao 的桌面应用需要 Windows 11。");
+    eprintln!("NotchCalendar 的桌面应用需要 Windows 11。");
 }

@@ -871,7 +871,7 @@ pub fn export_file(path: &Path, events: &[Event], now: i64) -> Result<(), String
 fn encode(events: &[Event], now: i64) -> Result<String, String> {
     let stamp = ical_utc(now)?;
     let mut output = String::from(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//WinDao//Windows//ZH\r\nCALSCALE:GREGORIAN\r\n",
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//NotchCalendar//Windows//ZH\r\nCALSCALE:GREGORIAN\r\n",
     );
     let mut exported_uids = HashSet::new();
     for event in events {

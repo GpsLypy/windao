@@ -108,7 +108,7 @@ mod windows {
     fn fetch() -> Result<Vec<Manifest>, &'static str> {
         let url = url::Url::parse(URL).expect("fixed catalog URL");
         let (status, body) = crate::calendar_sync::get_json(&url)
-            .map_err(|_| "无法连接 WinDao 在线目录，请检查网络。")?;
+            .map_err(|_| "无法连接 NotchCalendar 在线目录，请检查网络。")?;
         if status != 200 {
             return Err("在线目录暂时不可用，请稍后刷新。");
         }

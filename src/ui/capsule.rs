@@ -13,12 +13,13 @@ use crate::{
 
 use super::{CapsuleFrame, Page, ShellAction, calendar, focus};
 
-const SURFACE: Color32 = Color32::from_rgb(13, 17, 24);
-const CARD: Color32 = Color32::from_rgb(23, 30, 42);
-const BORDER: Color32 = Color32::from_rgb(47, 60, 79);
-const CAPTION: Color32 = Color32::from_rgb(157, 172, 194);
-const INK: Color32 = Color32::from_rgb(245, 248, 255);
-const SIGNAL: Color32 = Color32::from_rgb(153, 196, 255);
+const SURFACE: Color32 = Color32::from_gray(20);
+const CARD: Color32 = Color32::from_gray(33);
+const BORDER: Color32 = Color32::from_gray(56);
+const CAPTION: Color32 = Color32::from_gray(178);
+const INK: Color32 = Color32::from_gray(245);
+const SIGNAL: Color32 = Color32::from_rgb(207, 202, 227);
+const SELECTED: Color32 = Color32::from_rgb(47, 45, 54);
 
 pub(crate) struct CapsuleOptions<'a> {
     pub dock: DockEdge,
@@ -117,7 +118,7 @@ pub(crate) fn draw(
     if options.avoiding {
         let strip = root.interact(rect, Id::new("capsule-edge-strip"), egui::Sense::click());
         strip.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "展开 WinDao")
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "展开 NotchCalendar")
         });
         let color = if strip.hovered() || strip.has_focus() {
             SIGNAL
@@ -129,19 +130,16 @@ pub(crate) fn draw(
         return frame;
     }
 
-    let (fill, rim) = if store.state().settings.dock.translucent {
-        (
-            Color32::from_rgba_unmultiplied(18, 29, 46, 224),
-            Color32::from_rgb(92, 116, 148),
-        )
+    let fill = if store.state().settings.dock.translucent {
+        Color32::from_rgba_unmultiplied(SURFACE.r(), SURFACE.g(), SURFACE.b(), 224)
     } else {
-        (SURFACE, BORDER)
+        SURFACE
     };
     root.painter().rect(
         rect,
         radius,
         fill,
-        Stroke::new(1.0_f32, rim),
+        Stroke::new(1.0_f32, BORDER),
         StrokeKind::Inside,
     );
     if options.expanded && progress > 0.68 {
@@ -214,14 +212,14 @@ fn compact_content(
     let timer = &store.state().focus;
     let running = timer.target_at.is_some();
     let action_label = if options.minimal {
-        "展开 WinDao".to_owned()
+        "展开 NotchCalendar".to_owned()
     } else if running && !options.dock.is_horizontal() {
         format!(
-            "展开 WinDao，专注剩余 {}",
+            "展开 NotchCalendar，专注剩余 {}",
             focus::digits(timer.seconds_left(now.timestamp_millis()))
         )
     } else {
-        format!("展开 WinDao，{time}")
+        format!("展开 NotchCalendar，{time}")
     };
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &action_label));
@@ -374,9 +372,12 @@ fn scale_style(ui: &mut Ui, scale: f32) {
     style.spacing.button_padding = vec2(8.0, 3.0) * scale;
     style.visuals.override_text_color = Some(INK);
     style.visuals.widgets.noninteractive.fg_stroke.color = CAPTION;
-    style.visuals.widgets.inactive.weak_bg_fill = CARD;
-    style.visuals.widgets.hovered.weak_bg_fill = BORDER;
-    style.visuals.selection.bg_fill = Color32::from_rgb(51, 75, 110);
+    let widgets = &mut style.visuals.widgets;
+    widgets.inactive.weak_bg_fill = CARD;
+    widgets.hovered.weak_bg_fill = BORDER;
+    widgets.hovered.bg_stroke.color = SIGNAL;
+    widgets.active.bg_stroke.color = SIGNAL;
+    style.visuals.selection.bg_fill = SELECTED;
     style.visuals.selection.stroke = Stroke::new(1.0_f32, SIGNAL);
     for font in style.text_styles.values_mut() {
         font.size *= scale;
