@@ -36,11 +36,6 @@ jobs:
             release/Windows-11-UnsignedTest.txt
           if-no-files-found: error
           retention-days: 7
-      - name: Check silent setup, upgrade and uninstall
-        env:
-          WINDAO_RUNNER_KIND: ${{ runner.environment }}
-        shell: pwsh
-        run: ./.github/workflows/test-installer.ps1
       - name: Package release and verify the portable application
         shell: pwsh
         run: ./.github/workflows/package-windows.ps1
@@ -53,3 +48,13 @@ jobs:
             release/*.sha256
           if-no-files-found: error
           retention-days: 7
+
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check silent setup, upgrade and uninstall
+        env:
+          WINDAO_RUNNER_KIND: ${{ runner.environment }}
+        shell: pwsh
+        run: ./.github/workflows/test-installer.ps1

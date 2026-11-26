@@ -10,7 +10,7 @@ $uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WinDa
 $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $desktopLink = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) "NotchCalendar.lnk"
 $startLink = Join-Path ([Environment]::GetFolderPath('Programs')) "NotchCalendar.lnk"
-$login = { Get-ItemPropertyValue -LiteralPath $runKey -Name WinDao -ErrorAction SilentlyContinue }
+$login = { [Microsoft.Win32.Registry]::GetValue("HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run", "WinDao", $null) }
 if ((Test-Path $uninstallKey) -or (Test-Path $desktopLink) -or (Test-Path $startLink) -or (& $login)) {
     throw "Test requires a clean runner profile."
 }
