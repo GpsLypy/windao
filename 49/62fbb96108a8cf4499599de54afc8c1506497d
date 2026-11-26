@@ -1,0 +1,21 @@
+.github/workflows/check.yml
+  s_f26486ea6624c1::t_70ed91b9c622d0 51-60
+.github/workflows/test-installer.ps1
+  s_f26486ea6624c1::t_9f52efaa77a997 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4962fbb96108a8cf4499599de54afc8c1506497d",
+  "prompts": {},
+  "sessions": {
+    "s_f26486ea6624c1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a21603-ebf6-7503-9876-f6050c07cd76",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "GpsLypy <80027734+GpsLypy@users.noreply.github.com>"
+    }
+  }
+}
