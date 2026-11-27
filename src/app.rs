@@ -17,7 +17,7 @@ use crate::workspace::{Store, TaskStatus};
 
 const TITLE: &str = "NotchCalendar";
 pub(crate) const WORKBENCH_VIEWPORT_KEY: &str = "windao-workbench";
-const FOLD_TIME: Duration = Duration::from_millis(360);
+const HOVER_DELAY: Duration = Duration::from_millis(105);
 const AUTO_FOLD_TIME: Duration = Duration::from_millis(440);
 const AVOIDANCE_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) static PRODUCT_ICON: LazyLock<Arc<egui::IconData>> = LazyLock::new(|| {
@@ -91,9 +91,12 @@ pub fn run() -> Result<(), String> {
                     icon: icon.clone(),
                     shell: None,
                     expanded: false,
+                    animation_expanded: false,
+                    resize_origin: None,
+                    resize_size: None,
                     pinned: false,
                     visible: false,
-                    fold_at: None,
+                    hover_at: None,
                     pointer_left_at: None,
                     suppress_hover: false,
                     focus_capsule: false,
@@ -144,9 +147,12 @@ struct Desktop {
     icon: Arc<egui::IconData>,
     shell: Option<Shell>,
     expanded: bool,
+    animation_expanded: bool,
+    resize_origin: Option<([i32; 2], [f32; 2])>,
+    resize_size: Option<[u16; 2]>,
     pinned: bool,
     visible: bool,
-    fold_at: Option<Instant>,
+    hover_at: Option<Instant>,
     pointer_left_at: Option<Instant>,
     suppress_hover: bool,
     focus_capsule: bool,
@@ -187,10 +193,10 @@ impl Desktop {
             }
             self.expanded = expanded;
             self.pointer_left_at = None;
-            self.fold_at = (!expanded).then(|| Instant::now() + FOLD_TIME);
         }
         self.focus_capsule = focus && expanded;
         self.suppress_hover = !expanded;
+        self.hover_at = None;
         if !expanded {
             self.override_avoidance = false;
         }
@@ -404,9 +410,6 @@ impl Desktop {
             .as_ref()
             .is_some_and(Shell::dock_move_in_progress);
         let reduced_motion = settings.reduced_motion || windows::reduce_motion();
-        if reduced_motion || self.fold_at.is_some_and(|deadline| deadline <= now) {
-            self.fold_at = None;
-        }
 
         let show_lyrics = dock.edge == DockEdge::Top && dock.top_lyrics && !dock.minimal;
         let lyrics = if show_lyrics {
@@ -436,7 +439,6 @@ impl Desktop {
         let shell = self.shell.as_mut().expect("initialized Windows shell");
         let idle = !moving
             && !self.expanded
-            && self.fold_at.is_none()
             && self.occlusion == Occlusion::Clear
             && !shell.cursor_over_capsule();
         let (shift, next_shift) =
@@ -474,7 +476,6 @@ impl Desktop {
                 self.occlusion = next;
                 if next != Occlusion::Clear {
                     self.set_expanded(false, false);
-                    self.fold_at = None;
                     self.pinned = false;
                 }
             }
@@ -484,17 +485,17 @@ impl Desktop {
         }
         let avoiding = self.occlusion == Occlusion::Covered && !self.override_avoidance;
         let hidden = self.occlusion == Occlusion::Fullscreen;
-        let host_expanded = !avoiding && !hidden && (self.expanded || self.fold_at.is_some());
         let resting = if avoiding {
             capsule::avoidance_size(dock)
         } else {
             compact
         };
-        let size = if host_expanded {
-            dock.expanded_size()
-        } else {
-            resting.into()
-        };
+        // The rounded window region exposes only the painted silhouette. Keep the
+        // backing surface in place so a morph never races a native move or resize.
+        let size = self
+            .resize_size
+            .map_or_else(|| dock.expanded_size(), |size| size.map(f32::from));
+        let size = [size[0].max(compact.x), size[1].max(compact.y)];
         let shell = self.shell.as_mut().expect("initialized Windows shell");
         if let Err(error) = shell.set_capture_exclusion(dock.exclude_from_capture) {
             self.workbench
@@ -525,6 +526,16 @@ impl Desktop {
         if std::mem::take(&mut self.focus_capsule) && !hidden {
             shell.focus_capsule();
         }
+        let viewport_pixels = ctx.viewport_rect().size() * ctx.pixels_per_point();
+        let layout_ready = layout.as_ref().is_some_and(|layout| {
+            (viewport_pixels.x - layout.width * layout.scale).abs() < 2.0
+                && (viewport_pixels.y - layout.height * layout.scale).abs() < 2.0
+        });
+        // Wait for the client area after a dock, size or DPI change.
+        self.animation_expanded = self.expanded && (layout_ready || self.animation_expanded);
+        if !layout_ready && !moving && !hidden {
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
         let pages: Vec<_> = dock
             .pages
             .iter()
@@ -537,13 +548,17 @@ impl Desktop {
             &mut self.capsule_state,
             CapsuleOptions {
                 dock: dock.edge,
-                expanded: self.expanded,
+                expanded: self.animation_expanded,
                 pinned: self.pinned,
                 avoiding,
                 hidden,
                 reduce_motion: reduced_motion,
-                collapsed_size: resting,
-                collapsed_center: layout.map(|layout| egui::Pos2::from(layout.compact_center)),
+                collapsed_size: layout.map_or(resting, |layout| {
+                    layout.compact.size() / ctx.pixels_per_point()
+                }),
+                collapsed_center: layout.map(|layout| {
+                    (layout.compact.center().to_vec2() / ctx.pixels_per_point()).to_pos2()
+                }),
                 scale: dock.factor(),
                 lyrics: lyrics.as_deref(),
                 clock_24h: dock.clock_24h,
@@ -553,12 +568,7 @@ impl Desktop {
             &mut self.workbench,
             &mut self.sources,
         );
-        // Win32 can resize before egui receives the new client size and scale.
-        if !hidden
-            && let Some(layout) = layout
-            && (ctx.viewport_rect().width() - layout.width).abs() < 2.0
-            && (ctx.viewport_rect().height() - layout.height).abs() < 2.0
-        {
+        if !hidden && !moving && layout_ready {
             shell.update_region(
                 capsule.rect,
                 f32::from(capsule.radius),
@@ -566,47 +576,136 @@ impl Desktop {
                 ctx.pixels_per_point(),
             );
         }
+        let pointer = Shell::cursor_position();
+        let local_pointer = pointer.zip(layout).map(|([x, y], layout)| {
+            egui::pos2(
+                (x - layout.origin[0]) as f32 / ctx.pixels_per_point(),
+                (y - layout.origin[1]) as f32 / ctx.pixels_per_point(),
+            )
+        });
         let over_capsule = shell.cursor_over_capsule();
         let capsule_focused = shell.capsule_has_focus();
-        if !over_capsule {
-            self.suppress_hover = false;
-        }
-        if !moving
-            && let Some(action) = capsule.action
-            && (self.expanded || !windows::dock_drag_modifier())
+        if capsule.resizing
+            && !moving
+            && let Some(pointer) = pointer
         {
-            let explicit = ctx.input(|input| {
-                input.pointer.any_click()
-                    || input.key_pressed(egui::Key::Enter)
-                    || input.key_pressed(egui::Key::Space)
+            let (origin, initial) = *self.resize_origin.get_or_insert_with(|| {
+                (
+                    pointer,
+                    layout
+                        .as_ref()
+                        .map_or(size, |layout| [layout.width, layout.height]),
+                )
             });
-            self.apply_capsule_action(action, explicit, &ctx);
+            let scale = layout.map_or_else(|| ctx.pixels_per_point(), |layout| layout.scale);
+            let mut delta = [
+                (pointer[0] - origin[0]) as f32 / scale,
+                (pointer[1] - origin[1]) as f32 / scale,
+            ];
+            let bias = (f32::from(dock.offset) + 100.0) / 200.0;
+            let leading = dock.offset > 0;
+            let along = if leading { -bias } else { 1.0 - bias };
+            match dock.edge {
+                crate::dock::DockEdge::Top => delta[0] /= along,
+                crate::dock::DockEdge::Bottom => {
+                    delta[0] /= along;
+                    delta[1] = -delta[1];
+                }
+                crate::dock::DockEdge::Left => delta[1] /= along,
+                crate::dock::DockEdge::Right => {
+                    delta[0] = -delta[0];
+                    delta[1] /= along;
+                }
+            }
+            let next = std::array::from_fn(|axis| {
+                (initial[axis] + delta[axis]).round().clamp(
+                    f32::from(crate::dock::DockSettings::PANEL_MIN[axis]),
+                    f32::from(crate::dock::DockSettings::PANEL_MAX[axis]),
+                ) as u16
+            });
+            if self.resize_size != Some(next) {
+                self.resize_size = Some(next);
+                ctx.request_repaint();
+            }
+        } else if self.resize_origin.take().is_some()
+            && let Some(size) = self.resize_size.take()
+        {
+            let result = self.store.update(|state| {
+                state.settings.dock.panel_size = Some(size);
+                Ok(())
+            });
+            self.capsule_state.report_error(result.err());
             ctx.request_repaint();
         }
+        let over_hover_target = local_pointer
+            .zip(capsule.hover_rect)
+            .is_some_and(|(pointer, target)| target.contains(pointer));
+        if layout_ready && !over_hover_target {
+            self.suppress_hover = false;
+        }
+        let dock_modifier = windows::dock_drag_modifier();
+        if !moving
+            && let Some(action) = capsule.action
+            && (self.expanded || !dock_modifier)
+        {
+            self.apply_capsule_action(action, &ctx);
+            ctx.request_repaint();
+            return;
+        }
+        let hover = !self.expanded
+            && !self.suppress_hover
+            && !moving
+            && layout_ready
+            && over_capsule
+            && over_hover_target
+            && !dock_modifier
+            && !ctx.input(|input| input.pointer.any_down());
+        if hover {
+            let since = *self.hover_at.get_or_insert(now);
+            let wait = HOVER_DELAY.saturating_sub(now.saturating_duration_since(since));
+            if wait.is_zero() {
+                self.apply_capsule_action(ShellAction::Expand, &ctx);
+                ctx.request_repaint();
+            } else {
+                ctx.request_repaint_after(wait);
+            }
+        } else {
+            self.hover_at = None;
+        }
         if self.expanded && !self.pinned {
-            if over_capsule || capsule_focused {
+            let near_edge =
+                local_pointer.is_some_and(|pointer| capsule.rect.expand(6.0).contains(pointer));
+            if over_capsule
+                || near_edge
+                || capsule_focused
+                || capsule.resizing
+                || !layout_ready
+                || capsule.progress < 1.0
+            {
                 self.pointer_left_at = None;
             } else {
                 let since = self.pointer_left_at.get_or_insert(now);
                 if now.saturating_duration_since(*since) >= AUTO_FOLD_TIME {
                     self.set_expanded(false, false);
+                    self.suppress_hover = false;
                     ctx.request_repaint();
                 }
             }
             ctx.request_repaint_after(Duration::from_millis(50));
         }
-        if let Some(deadline) = self.fold_at {
-            ctx.request_repaint_after(deadline.saturating_duration_since(now));
-        }
     }
 
-    fn apply_capsule_action(&mut self, action: ShellAction, explicit: bool, ctx: &egui::Context) {
+    fn apply_capsule_action(&mut self, action: ShellAction, ctx: &egui::Context) {
         match action {
-            ShellAction::Expand if !self.suppress_hover || explicit => {
+            ShellAction::Expand => {
                 self.override_avoidance = self.occlusion == Occlusion::Covered;
                 self.set_expanded(true, false);
             }
-            ShellAction::Expand => {}
+            ShellAction::ExpandPage(page) => {
+                self.override_avoidance = self.occlusion == Occlusion::Covered;
+                self.set_expanded(true, false);
+                self.capsule_state.open_page(page);
+            }
             ShellAction::Collapse => self.set_expanded(false, false),
             ShellAction::SetPinned(value) => self.pinned = value,
             ShellAction::OpenWorkbench(page) => self.open_workbench(page),
@@ -633,6 +732,27 @@ impl Desktop {
                 self.open_desktop_todo(ctx);
                 if !self.pinned {
                     self.set_expanded(false, false);
+                }
+            }
+            ShellAction::SelectFocusPreset(minutes, kind) => {
+                let result = self.store.update(|state| {
+                    let label = state.focus.label.clone();
+                    state.focus.configure(minutes, label, kind)
+                });
+                if result.is_ok() {
+                    self.workbench.sync_focus_preset();
+                    ctx.request_repaint_of(ViewportId::from_hash_of(WORKBENCH_VIEWPORT_KEY));
+                }
+                self.capsule_state.report_error(result.err());
+            }
+            ShellAction::ResetFocus(session) => {
+                if self.store.state().focus.session_id == Some(session) {
+                    let result = self.store.update(|state| {
+                        state.focus.reset();
+                        Ok(())
+                    });
+                    self.capsule_state.report_error(result.err());
+                    ctx.request_repaint_of(ViewportId::from_hash_of(WORKBENCH_VIEWPORT_KEY));
                 }
             }
             ShellAction::ToggleFocus => {

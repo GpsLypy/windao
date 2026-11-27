@@ -69,9 +69,10 @@ pub(crate) fn bubble(
             },
         ),
     );
-    let icon = center - vec2(0.0, if pending > 0 { 6.0 } else { 0.0 });
+    let unit = radius / 27.0;
+    let icon = center - vec2(0.0, if pending > 0 { 6.0 } else { 0.0 }) * unit;
     painter.rect_stroke(
-        Rect::from_center_size(icon, vec2(18.0, 18.0)),
+        Rect::from_center_size(icon, vec2(18.0, 18.0) * unit),
         4,
         Stroke::new(1.7_f32, ink),
         StrokeKind::Inside,
@@ -91,10 +92,10 @@ pub(crate) fn bubble(
             pending.to_string()
         };
         painter.text(
-            center + vec2(0.0, 13.0),
+            center + vec2(0.0, 13.0) * unit,
             Align2::CENTER_CENTER,
             badge,
-            FontId::proportional(12.0),
+            FontId::proportional((12.0 * unit).max(9.0)),
             signal,
         );
     }
@@ -163,18 +164,19 @@ impl DesktopTodo {
     pub fn show(&mut self, root: &mut Ui, store: &mut Store) -> bool {
         let theme = todo_theme(root, store.state().settings.appearance);
         root.set_style(root.ctx().style_of(theme));
-        let now = Local::now();
-        let today = now.date_naive();
         let mut open_editor = false;
-        let mut change = None;
         egui::CentralPanel::default()
             .frame(Frame::central_panel(root.style()).inner_margin(Margin::symmetric(14, 12)))
             .show_inside(root, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new(format!("{}月{}日", now.format("%-m"), now.format("%-d")))
-                            .size(20.0)
-                            .strong(),
+                        RichText::new(format!(
+                            "{}月{}日",
+                            Local::now().format("%-m"),
+                            Local::now().format("%-d")
+                        ))
+                        .size(20.0)
+                        .strong(),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let mut pinned = store.state().settings.desktop_todo.pinned;
@@ -189,108 +191,113 @@ impl DesktopTodo {
                         open_editor = ui.button("全部待办").clicked();
                     });
                 });
-                ui.horizontal(|ui| {
-                    let width = (ui.available_width() - 64.0).max(80.0);
-                    let field = ui.add(
-                        TextEdit::singleline(&mut self.draft)
-                            .desired_width(width)
-                            .min_size(egui::vec2(0.0, 32.0))
-                            .vertical_align(Align::Center)
-                            .hint_text("添加待办…")
-                            .char_limit(500),
-                    );
-                    let submit =
-                        field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                    if ui
-                        .add_enabled(!self.draft.trim().is_empty(), Button::new("添加"))
-                        .clicked()
-                        || (submit && !self.draft.trim().is_empty())
-                    {
-                        self.add(store);
-                        ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
-                        field.request_focus();
-                    }
-                });
-                if let Some(error) = &self.error {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
+                self.show_list(ui, store);
+            });
+        open_editor
+    }
+
+    pub(super) fn show_list(&mut self, ui: &mut Ui, store: &mut Store) {
+        let now = Local::now();
+        let today = now.date_naive();
+        let mut change = None;
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - 68.0).max(48.0);
+            let field = ui.add(
+                TextEdit::singleline(&mut self.draft)
+                    .desired_width(width)
+                    .min_size(egui::vec2(0.0, 32.0))
+                    .vertical_align(Align::Center)
+                    .hint_text("添加待办…")
+                    .char_limit(250),
+            );
+            let submit =
+                field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            if ui
+                .add_enabled(!self.draft.trim().is_empty(), Button::new("添加"))
+                .clicked()
+                || (submit && !self.draft.trim().is_empty())
+            {
+                self.add(store);
+                ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                field.request_focus();
+            }
+        });
+        if let Some(error) = &self.error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
+        let (mut pending, mut finished): (Vec<_>, Vec<_>) = store
+            .state()
+            .tasks
+            .iter()
+            .filter(|task| {
+                task.is_actionable_on(today) || task.status_on(today) == TaskStatus::Completed
+            })
+            .partition(|task| task.status_on(today) != TaskStatus::Completed);
+        pending.sort_by_key(|task| {
+            (
+                task.due_at_on(today).unwrap_or(i64::MAX),
+                std::cmp::Reverse(task.created_at),
+            )
+        });
+        finished.sort_by_key(|task| {
+            std::cmp::Reverse(task.completed_at.unwrap_or(now.timestamp_millis()))
+        });
+        ui.horizontal(|ui| {
+            ui.selectable_value(
+                &mut self.completed,
+                false,
+                format!("待处理 {}", pending.len()),
+            );
+            ui.selectable_value(
+                &mut self.completed,
+                true,
+                format!("已完成 {}", finished.len()),
+            );
+        });
+        ui.separator();
+        let rows = if self.completed { finished } else { pending };
+        egui::ScrollArea::vertical()
+            .id_salt("desktop-todo-rows")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                if rows.is_empty() {
+                    ui.weak(if self.completed {
+                        "还没有已完成的待办"
+                    } else {
+                        "当前没有待处理的待办"
+                    });
                 }
-                let (mut pending, mut finished): (Vec<_>, Vec<_>) = store
-                    .state()
-                    .tasks
-                    .iter()
-                    .filter(|task| {
-                        task.is_actionable_on(today)
-                            || task.status_on(today) == TaskStatus::Completed
-                    })
-                    .partition(|task| task.status_on(today) != TaskStatus::Completed);
-                pending.sort_by_key(|task| {
-                    (
-                        task.due_at_on(today).unwrap_or(i64::MAX),
-                        std::cmp::Reverse(task.created_at),
-                    )
-                });
-                finished.sort_by_key(|task| {
-                    std::cmp::Reverse(task.completed_at.unwrap_or(now.timestamp_millis()))
-                });
-                ui.horizontal(|ui| {
-                    ui.selectable_value(
-                        &mut self.completed,
-                        false,
-                        format!("待处理 {}", pending.len()),
-                    );
-                    ui.selectable_value(
-                        &mut self.completed,
-                        true,
-                        format!("已完成 {}", finished.len()),
-                    );
-                });
-                ui.separator();
-                let rows = if self.completed { finished } else { pending };
-                egui::ScrollArea::vertical()
-                    .id_salt("desktop-todo-rows")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                        if rows.is_empty() {
-                            ui.weak(if self.completed {
-                                "还没有已完成的待办"
-                            } else {
-                                "当前没有待处理的待办"
-                            });
+                for task in rows {
+                    ui.push_id(task.id, |ui| {
+                        let mut done = self.completed;
+                        let text = if done {
+                            RichText::new(&task.title).weak().strikethrough()
+                        } else {
+                            RichText::new(&task.title)
+                        };
+                        if ui.checkbox(&mut done, text).changed() {
+                            change = Some((task.id, done));
                         }
-                        for task in rows {
-                            ui.push_id(task.id, |ui| {
-                                let mut done = self.completed;
-                                let text = if done {
-                                    RichText::new(&task.title).weak().strikethrough()
-                                } else {
-                                    RichText::new(&task.title)
-                                };
-                                if ui.checkbox(&mut done, text).changed() {
-                                    change = Some((task.id, done));
-                                }
-                                let detail = task_detail(task, today);
-                                if !detail.is_empty() {
-                                    Frame::NONE
-                                        .inner_margin(Margin {
-                                            left: (ui.spacing().icon_width
-                                                + ui.spacing().icon_spacing)
-                                                as i8,
-                                            ..Margin::ZERO
-                                        })
-                                        .show(ui, |ui| {
-                                            ui.label(RichText::new(detail).small().weak());
-                                        });
-                                }
-                            });
+                        let detail = task_detail(task, today);
+                        if !detail.is_empty() {
+                            Frame::NONE
+                                .inner_margin(Margin {
+                                    left: (ui.spacing().icon_width + ui.spacing().icon_spacing)
+                                        as i8,
+                                    ..Margin::ZERO
+                                })
+                                .show(ui, |ui| {
+                                    ui.label(RichText::new(detail).small().weak());
+                                });
                         }
                     });
+                }
             });
         if let Some((id, done)) = change {
             self.set_done(store, id, done, now.timestamp_millis());
-            root.ctx().request_repaint_of(egui::ViewportId::ROOT);
+            ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
         }
-        open_editor
     }
 }
 

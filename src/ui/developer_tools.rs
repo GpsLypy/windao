@@ -252,12 +252,23 @@ pub(crate) fn read_image(path: &Path) -> Result<image::DynamicImage> {
 }
 impl DeveloperTools {
     pub fn show(&mut self, ui: &mut Ui) {
-        ui.horizontal_wrapped(|ui| {
+        let compact = super::in_capsule(ui);
+        let tools = |ui: &mut Ui, selected: &mut Tool| {
             for (tool, label) in TOOLS {
-                ui.selectable_value(&mut self.tool, tool, label);
+                ui.selectable_value(selected, tool, label);
             }
-        });
-        ui.separator();
+        };
+        if compact && ui.available_width() < 480.0 {
+            let current = TOOLS
+                .iter()
+                .find(|(tool, _)| *tool == self.tool)
+                .map_or("工具", |(_, label)| *label);
+            egui::ComboBox::from_id_salt("developer-tool")
+                .selected_text(current)
+                .show_ui(ui, |ui| tools(ui, &mut self.tool));
+        } else {
+            ui.horizontal_wrapped(|ui| tools(ui, &mut self.tool));
+        }
         if self.tool == Tool::Image {
             #[cfg(windows)]
             self.images.show(ui);
@@ -328,7 +339,7 @@ impl DeveloperTools {
             && ui
                 .add(
                     egui::TextEdit::multiline(&mut d.input)
-                        .desired_rows(3)
+                        .desired_rows(if compact { 2 } else { 3 })
                         .desired_width(f32::INFINITY)
                         .hint_text("输入或粘贴内容")
                         .char_limit(1_048_576),
@@ -426,7 +437,7 @@ impl DeveloperTools {
             ui.add(
                 egui::TextEdit::multiline(&mut d.output)
                     .desired_width(f32::INFINITY)
-                    .desired_rows(4)
+                    .desired_rows(if compact { 2 } else { 4 })
                     .code_editor(),
             );
         }

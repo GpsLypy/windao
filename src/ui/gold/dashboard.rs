@@ -76,13 +76,14 @@ impl Dashboard {
         let due = self.deadline.is_none_or(|v| Instant::now() >= v);
         let manual = ui
             .horizontal(|ui| {
-                ui.weak(if global {
-                    "新浪财经 · 公开行情快照"
+                let source = if global {
+                    "新浪财经 · 全球市场"
                 } else {
                     "腾讯财经 · 沪深 A 股"
-                });
+                };
                 let clicked = ui
                     .add_enabled(self.pending.is_none(), Button::new("刷新行情"))
+                    .on_hover_text(source)
                     .clicked();
                 if self.pending.is_some() {
                     ui.spinner();
@@ -112,12 +113,16 @@ impl Dashboard {
             );
         }
         let mut remove = None;
+        let narrow = super::super::in_capsule(ui) && ui.available_width() < 440.0;
         egui::Grid::new("market-quotes")
             .striped(true)
             .spacing([12., 6.])
             .show(ui, |ui| {
-                for t in ["证券", "最新", "涨跌", "涨跌幅", "报价时间（北京）"] {
-                    ui.weak(t);
+                for label in ["证券", "最新", "涨跌", "涨跌幅", "报价时间（北京）"]
+                {
+                    if !narrow || !matches!(label, "涨跌" | "报价时间（北京）") {
+                        ui.weak(label);
+                    }
                 }
                 ui.end_row();
                 for row in &rows {
@@ -129,11 +134,19 @@ impl Dashboard {
                             2
                         };
                         ui.monospace(format!("{:.*}", decimals, q.price));
-                        ui.monospace(format!("{:+.*}", decimals, q.change));
-                        ui.monospace(format!("{:+.2}%", q.percent));
-                        ui.weak(&q.stamp);
+                        if !narrow {
+                            ui.monospace(format!("{:+.*}", decimals, q.change));
+                        }
+                        ui.monospace(format!("{:+.2}%", q.percent))
+                            .on_hover_text(format!(
+                                "涨跌 {:+.*} · 北京时间 {}",
+                                decimals, q.change, q.stamp
+                            ));
+                        if !narrow {
+                            ui.weak(&q.stamp);
+                        }
                     } else {
-                        for _ in 0..4 {
+                        for _ in 0..if narrow { 2 } else { 4 } {
                             ui.weak("—");
                         }
                     }

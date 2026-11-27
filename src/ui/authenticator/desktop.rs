@@ -126,7 +126,9 @@ impl Authenticator {
         } else {
             ui.ctx().request_repaint_after(Duration::from_secs(1));
             ui.horizontal_wrapped(|ui| {
-                ui.strong("身份验证器");
+                if !crate::ui::in_capsule(ui) {
+                    ui.strong("身份验证器");
+                }
                 if ui.button("锁定").clicked() {
                     self.lock();
                 }
@@ -145,8 +147,10 @@ impl Authenticator {
         }
     }
     fn unlock_form(&mut self, ui: &mut Ui, path: &Path) {
-        ui.heading("身份验证器");
-        ui.weak("解锁后可查看验证码，离开页面或经过两分钟会锁定。");
+        if !crate::ui::in_capsule(ui) {
+            ui.heading("身份验证器");
+            ui.weak("离开页面或经过两分钟会锁定。");
+        }
         let existing = match storage::mode(path) {
             Ok(v) => v,
             Err(e) => {

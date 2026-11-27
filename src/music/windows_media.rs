@@ -39,6 +39,7 @@ const WINDOWS_UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(3);
 const ARTWORK_TIMEOUT: Duration = Duration::from_millis(800);
 const RECHECK_INTERVAL: Duration = Duration::from_secs(6);
+const HANDOVER_INTERVAL: Duration = Duration::from_millis(1500);
 const MAX_SESSIONS: u32 = 24;
 const NO_SESSION: HRESULT = HRESULT(0x8000_4003_u32 as i32); // E_POINTER from a null WinRT session.
 
@@ -62,11 +63,17 @@ pub(super) fn run(
         current: None,
         caption: None,
         generation: 0,
+        last_track: None,
+        handover_until: None,
+        successor: None,
     };
     let mut reconcile_at = Instant::now();
     while !activity.stopped.load(Ordering::Relaxed) {
         let request = if activity.visible.load(Ordering::Relaxed) {
-            requests.recv_timeout(reconcile_at.saturating_duration_since(Instant::now()))
+            let deadline = worker
+                .handover_until
+                .map_or(reconcile_at, |until| until.min(reconcile_at));
+            requests.recv_timeout(deadline.saturating_duration_since(Instant::now()))
         } else {
             requests.recv().map_err(|_| RecvTimeoutError::Disconnected)
         };
@@ -179,23 +186,85 @@ struct Worker<'a> {
     current: Option<WatchSession>,
     caption: Option<super::player_window::Caption>,
     generation: u64,
+    last_track: Option<Arc<Snapshot>>,
+    handover_until: Option<Instant>,
+    successor: Option<Session>,
 }
 
 impl Worker<'_> {
     fn status(&mut self, read_metadata: bool, update_artwork: bool) -> Status {
-        match self.snapshot(read_metadata, update_artwork) {
-            Ok(Some(snapshot)) => Status::Ready(Arc::new(snapshot)),
-            Ok(None) => Status::NoSession,
-            Err(error) => Status::Error(error),
+        match self.refresh(read_metadata, update_artwork) {
+            Ok(status) => status,
+            Err(error) => {
+                self.handover_until = None;
+                self.last_track = None;
+                self.successor = None;
+                Status::Error(error)
+            }
         }
+    }
+
+    fn refresh(&mut self, read_metadata: bool, update_artwork: bool) -> Result<Status, String> {
+        let candidates = self.sessions()?;
+        let previous = self.current.as_ref();
+        let previous_present = previous.is_some_and(|watch| candidates.contains(&watch.session));
+        let now = Instant::now();
+        let departing = !previous_present
+            && self.last_track.as_ref().is_some_and(|track| {
+                previous.is_some_and(|watch| watch.generation == track.generation)
+                    && track.state == PlaybackState::Playing
+                    && !track.source.is_empty()
+                    && !track.title.is_empty()
+            });
+        if departing || self.handover_until.is_some() {
+            let deadline = *self.handover_until.get_or_insert(now + HANDOVER_INTERVAL);
+            if now < deadline {
+                let track = self.last_track.as_ref().expect("departing track");
+                let replacement = candidates.iter().find(|session| {
+                    session_is_playing(session)
+                        && session.SourceAppUserModelId().is_ok_and(|source| {
+                            source.to_string_lossy().eq_ignore_ascii_case(&track.source)
+                        })
+                });
+                if let Some(session) = replacement
+                    && let Some(snapshot) =
+                        self.snapshot(Some(session.clone()), true, update_artwork)?
+                    && !snapshot.title.is_empty()
+                {
+                    self.successor = Some(session.clone());
+                    self.handover_until = None;
+                    let track = Arc::new(snapshot);
+                    self.last_track = Some(Arc::clone(&track));
+                    return Ok(Status::Ready(track));
+                }
+                // Keep the artwork and lyrics visible while the replacement loads.
+                let mut held = (**self.last_track.as_ref().expect("departing track")).clone();
+                held.capabilities = Capabilities::default();
+                return Ok(Status::Ready(Arc::new(held)));
+            }
+        }
+        self.handover_until = None;
+        self.successor = self
+            .successor
+            .take()
+            .filter(|session| candidates.contains(session) && session_is_playing(session));
+        let session = self.select_session(candidates);
+        self.last_track = self
+            .snapshot(session, read_metadata, update_artwork)?
+            .map(Arc::new);
+        Ok(self
+            .last_track
+            .clone()
+            .map_or(Status::NoSession, Status::Ready))
     }
 
     fn snapshot(
         &mut self,
+        session: Option<Session>,
         read_metadata: bool,
         update_artwork: bool,
     ) -> Result<Option<Snapshot>, String> {
-        let Some(session) = self.current_session()? else {
+        let Some(session) = session else {
             let had_session = self.current.take().is_some();
             if read_metadata || had_session {
                 let caption = super::player_window::read(None);
@@ -228,13 +297,20 @@ impl Worker<'_> {
         }
         let current = self.current.as_mut().expect("watching a session");
         if read_metadata || current.metadata.is_none() {
-            let (properties, metadata) = fetch_metadata(&current.session)?;
+            let timeout = self.handover_until.map_or(OPERATION_TIMEOUT, |deadline| {
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(OPERATION_TIMEOUT)
+            });
+            let (properties, metadata) = fetch_metadata(&current.session, timeout)?;
             let changed = current.metadata.as_ref() != Some(&metadata);
             if changed {
                 self.generation = self.generation.wrapping_add(1);
                 current.generation = self.generation;
             }
-            if changed || update_artwork {
+            if (changed || update_artwork)
+                && (self.handover_until.is_none() || !metadata.title.is_empty())
+            {
                 current.artwork = decode_artwork(&properties);
             }
             self.caption = if metadata.artist.is_empty() && !metadata.title.is_empty() {
@@ -265,7 +341,7 @@ impl Worker<'_> {
         }))
     }
 
-    fn current_session(&mut self) -> Result<Option<Session>, String> {
+    fn sessions(&mut self) -> Result<Vec<Session>, String> {
         if self.manager.is_none() {
             let request = Manager::RequestAsync()
                 .map_err(|error| media_error("无法连接 Windows 媒体会话", error))?;
@@ -302,17 +378,29 @@ impl Worker<'_> {
         };
         let all = match manager.GetSessions() {
             Ok(all) => all,
-            Err(_) if active.is_some() => return Ok(active),
+            Err(_) if active.is_some() => return Ok(active.into_iter().collect()),
             Err(error) => return Err(media_error("无法读取 Windows 播放器列表", error)),
         };
+        Ok(active
+            .into_iter()
+            .chain(
+                (0..all.Size().unwrap_or(0).min(MAX_SESSIONS))
+                    .filter_map(|index| all.GetAt(index).ok()),
+            )
+            .collect())
+    }
+
+    fn select_session(&self, candidates: Vec<Session>) -> Option<Session> {
+        if let Some(session) = self.successor.as_ref()
+            && candidates.contains(session)
+            && session_is_playing(session)
+        {
+            return Some(session.clone());
+        }
         let previous = self.current.as_ref().map(|watch| &watch.session);
-        let candidates = active.iter().cloned().chain(
-            (0..all.Size().unwrap_or(0).min(MAX_SESSIONS))
-                .filter_map(|index| all.GetAt(index).ok()),
-        );
-        let best =
-            candidates.min_by_key(|session| (session_rank(session), previous != Some(session)));
-        Ok(best)
+        candidates
+            .into_iter()
+            .min_by_key(|session| (session_rank(session), previous != Some(session)))
     }
 
     fn check_metadata(&self, session: &Session, generation: u64) -> Result<(), String> {
@@ -321,7 +409,7 @@ impl Worker<'_> {
             .as_ref()
             .filter(|current| current.session == *session && current.generation == generation)
             .ok_or("当前播放会话已更换，请重试")?;
-        if current.metadata.as_ref() != Some(&fetch_metadata(session)?.1) {
+        if current.metadata.as_ref() != Some(&fetch_metadata(session, OPERATION_TIMEOUT)?.1) {
             return Err("曲目已切换，请重试".into());
         }
         Ok(())
@@ -383,7 +471,11 @@ impl Worker<'_> {
     }
 
     fn command(&mut self, generation: u64, command: Command) -> Result<(), String> {
-        let Some(session) = self.current_session()? else {
+        if self.handover_until.is_some() {
+            return Err("正在切换播放会话，请稍后重试".into());
+        }
+        let candidates = self.sessions()?;
+        let Some(session) = self.select_session(candidates) else {
             return Err("播放器已关闭".into());
         };
         self.check_metadata(&session, generation)?;
@@ -429,11 +521,14 @@ impl Timeline {
     }
 }
 
-fn fetch_metadata(session: &Session) -> Result<(MediaProperties, Metadata), String> {
+fn fetch_metadata(
+    session: &Session,
+    timeout: Duration,
+) -> Result<(MediaProperties, Metadata), String> {
     let operation = session
         .TryGetMediaPropertiesAsync()
         .map_err(|error| media_error("无法读取曲目信息", error))?;
-    let properties = wait(operation, OPERATION_TIMEOUT, "读取曲目信息")?;
+    let properties = wait(operation, timeout, "读取曲目信息")?;
     let metadata = Metadata {
         title: media_text(properties.Title()),
         artist: media_text(properties.Artist()),
@@ -445,6 +540,14 @@ fn fetch_metadata(session: &Session) -> Result<(MediaProperties, Metadata), Stri
 fn media_text(value: windows::core::Result<windows::core::HSTRING>) -> String {
     let value = value.unwrap_or_default();
     String::from_utf16_lossy(&value[..value.len().min(4096)])
+}
+
+fn session_is_playing(session: &Session) -> bool {
+    session
+        .GetPlaybackInfo()
+        .and_then(|info| info.PlaybackStatus())
+        .ok()
+        == Some(NativePlaybackState::Playing)
 }
 
 fn session_rank(session: &Session) -> (u8, bool) {

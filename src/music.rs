@@ -56,7 +56,7 @@ pub enum Command {
     Seek(f64),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Snapshot {
     pub title: String,
     pub artist: String,

@@ -294,7 +294,7 @@ impl ProviderBalances {
                     self.adding = true;
                 }
             });
-            if self.adding || self.profiles.accounts.is_empty() {
+            if self.adding || (!super::in_capsule(ui) && self.profiles.accounts.is_empty()) {
                 egui::ComboBox::from_id_salt("account-provider")
                     .selected_text(self.provider.title())
                     .show_ui(ui, |ui| {

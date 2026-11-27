@@ -62,7 +62,7 @@ impl News {
             }
         }
         ui.horizontal(|ui| {
-            ui.heading("IT之家");
+            ui.strong("IT之家");
             if ui
                 .add_enabled(
                     self.pending.is_none(),
@@ -92,9 +92,6 @@ impl News {
                         ui.ctx().open_url(OpenUrl::new_tab(article.url.as_str()));
                     }
                 }
-            }
-            None if self.error.is_none() && self.pending.is_none() => {
-                ui.weak("刷新后查看最新标题。");
             }
             None => {}
         }

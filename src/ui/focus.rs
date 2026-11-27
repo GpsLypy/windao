@@ -22,6 +22,34 @@ struct FocusDraft {
     kind: FocusKind,
 }
 
+pub(super) const PRESETS: [(u32, FocusKind, &str); 3] = [
+    (45, FocusKind::Focus, "深度工作 45 分钟"),
+    (25, FocusKind::Focus, "专注 25 分钟"),
+    (5, FocusKind::Break, "休息 5 分钟"),
+];
+
+pub(super) fn presets(
+    ui: &mut Ui,
+    minutes: u32,
+    kind: FocusKind,
+    enabled: bool,
+) -> Option<(u32, FocusKind)> {
+    let mut selection = None;
+    ui.horizontal_wrapped(|ui| {
+        for (duration, mode, text) in PRESETS {
+            let tint = session_color(ui.visuals().dark_mode, mode, duration);
+            let button = egui::Button::selectable(
+                minutes == duration && kind == mode,
+                RichText::new(text).color(tint),
+            );
+            if ui.add_enabled(enabled, button).clicked() {
+                selection = Some((duration, mode));
+            }
+        }
+    });
+    selection
+}
+
 pub(super) fn status(focus: &Focus) -> &'static str {
     match (
         focus.session_id.is_some(),
@@ -40,6 +68,11 @@ pub(super) fn digits(seconds: u32) -> String {
 }
 
 impl Timer {
+    #[cfg(windows)]
+    pub(super) fn clear_draft(&mut self) {
+        self.draft = None;
+    }
+
     pub(super) fn show(
         &mut self,
         ui: &mut Ui,
@@ -82,28 +115,12 @@ impl Timer {
         let tint = session_color(ui.visuals().dark_mode, kind, duration);
         let mut controls = |ui: &mut Ui| {
             if session.is_none() {
-                ui.horizontal_wrapped(|ui| {
-                    for (minutes, kind, text) in [
-                        (45, FocusKind::Focus, "深度工作 45 分钟"),
-                        (25, FocusKind::Focus, "专注 25 分钟"),
-                        (5, FocusKind::Break, "休息 5 分钟"),
-                    ] {
-                        if ui
-                            .selectable_label(
-                                configured.minutes == minutes && configured.kind == kind,
-                                RichText::new(text).color(session_color(
-                                    ui.visuals().dark_mode,
-                                    kind,
-                                    minutes,
-                                )),
-                            )
-                            .clicked()
-                        {
-                            configured.minutes = minutes;
-                            configured.kind = kind;
-                        }
-                    }
-                });
+                if let Some((minutes, kind)) =
+                    presets(ui, configured.minutes, configured.kind, true)
+                {
+                    configured.minutes = minutes;
+                    configured.kind = kind;
+                }
                 ui.horizontal_wrapped(|ui| {
                     ui.add(
                         egui::DragValue::new(&mut configured.minutes)

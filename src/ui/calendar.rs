@@ -240,11 +240,11 @@ impl Calendar {
         ui: &mut Ui,
         events: &[Event],
         today: NaiveDate,
-        capsule_scale: Option<f32>,
+        capsule_layout: Option<(f32, f32)>,
     ) {
         let events = crate::workspace::event_identity::visible(events);
-        let scale = capsule_scale.unwrap_or(1.0);
-        let compact = capsule_scale.is_some();
+        let top = ui.cursor().top();
+        let compact = capsule_layout.is_some();
         ui.horizontal_wrapped(|ui| {
             subhead(ui, &self.date.format("%Y年%-m月").to_string());
             if ui.button("‹").on_hover_text("上个月").clicked() {
@@ -268,6 +268,11 @@ impl Calendar {
         let next_month = first.checked_add_months(Months::new(1)).unwrap_or(first);
         let days = (next_month - first).num_days();
         let weeks = (offset + days + 6) / 7;
+        let scale = capsule_layout.map_or(1.0, |(scale, height)| {
+            let remaining = height - (ui.cursor().top() - top);
+            let grid_height = 16.0 + 23.0 * weeks as f32;
+            scale.min((remaining / grid_height).max(0.72))
+        });
         let gap = if compact { 2.0 * scale } else { 4.0 };
         let size = vec2(
             ((ui.available_width() - 6.0 * gap) / 7.0).max(18.0 * scale),

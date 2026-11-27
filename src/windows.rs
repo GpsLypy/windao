@@ -570,7 +570,9 @@ pub struct LayoutRequest<'a> {
 pub struct Layout {
     pub width: f32,
     pub height: f32,
-    pub compact_center: [f32; 2],
+    pub origin: [i32; 2],
+    pub compact: egui::Rect,
+    pub scale: f32,
 }
 
 struct Events {
@@ -606,6 +608,7 @@ pub struct Shell {
     skin: Option<CapsuleSkin>,
     flat_edge: Option<DockEdge>,
     host_size: Option<HostSize>,
+    last_layout: Option<Layout>,
     suppressed: bool,
     capture_exclusion_requested: bool,
     avoidance: Avoidance,
@@ -677,6 +680,7 @@ impl Shell {
             skin: None,
             flat_edge: None,
             host_size: None,
+            last_layout: None,
             suppressed: false,
             capture_exclusion_requested: false,
             avoidance: Avoidance::default(),
@@ -782,6 +786,11 @@ impl Shell {
         ))
     }
 
+    pub fn cursor_position() -> Option<[i32; 2]> {
+        let mut pointer = POINT::default();
+        (unsafe { GetCursorPos(&mut pointer) } != 0).then_some([pointer.x, pointer.y])
+    }
+
     pub fn cursor_over_capsule(&self) -> bool {
         let mut pointer = POINT::default();
         unsafe { GetCursorPos(&mut pointer) != 0 && WindowFromPoint(pointer) == self.hwnd }
@@ -874,7 +883,7 @@ impl Shell {
         self.refresh_tray();
         self.refresh_hotkey();
         if self.dock_move_in_progress() {
-            return None;
+            return self.last_layout;
         }
         let hwnd = self.hwnd;
         let Some(display) = self.display(request.display) else {
@@ -901,10 +910,10 @@ impl Shell {
         );
         let width = right - left;
         let height = bottom - top;
-        let compact_px = [
-            (resting[0] - left) as f32 + (resting[2] - resting[0]) as f32 * 0.5,
-            (resting[1] - top) as f32 + (resting[3] - resting[1]) as f32 * 0.5,
-        ];
+        let compact = egui::Rect::from_min_max(
+            egui::pos2((resting[0] - left) as f32, (resting[1] - top) as f32),
+            egui::pos2((resting[2] - left) as f32, (resting[3] - top) as f32),
+        );
         let activation_changed = self.set_activation(request.interactive);
         let topmost = request.topmost;
         let raise = activation_changed && request.interactive && topmost;
@@ -942,14 +951,18 @@ impl Shell {
             edge: request.edge,
         };
         if self.host_size != Some(host) {
-            self.resize_region(host, request.radius, compact_px);
+            self.resize_region(host, request.radius, compact);
             self.host_size = Some(host);
         }
-        Some(Layout {
+        let layout = Layout {
             width: width as f32 / scale,
             height: height as f32 / scale,
-            compact_center: compact_px.map(|pixels| pixels / scale),
-        })
+            origin: [left, top],
+            compact,
+            scale,
+        };
+        self.last_layout = Some(layout);
+        Some(layout)
     }
 
     fn display(&mut self, device: Option<&str>) -> Option<&Display> {
@@ -1062,7 +1075,7 @@ impl Shell {
         changed
     }
 
-    fn resize_region(&mut self, host: HostSize, radius: f32, compact_px: [f32; 2]) {
+    fn resize_region(&mut self, host: HostSize, radius: f32, compact: egui::Rect) {
         let region = match (self.region, self.host_size) {
             (Some(previous), Some(old)) if old.edge == host.edge => {
                 // Keep the previous silhouette at the compact anchor while
@@ -1077,15 +1090,15 @@ impl Shell {
                         .clamp(0.0, (limit - span) as f32) as i32
                 };
                 let (left, top) = match host.edge {
-                    DockEdge::Top => (center(compact_px[0], width, host.width), 0),
+                    DockEdge::Top => (center(compact.center().x, width, host.width), 0),
                     DockEdge::Bottom => (
-                        center(compact_px[0], width, host.width),
+                        center(compact.center().x, width, host.width),
                         host.height - height,
                     ),
-                    DockEdge::Left => (0, center(compact_px[1], height, host.height)),
+                    DockEdge::Left => (0, center(compact.center().y, height, host.height)),
                     DockEdge::Right => (
                         host.width - width,
-                        center(compact_px[1], height, host.height),
+                        center(compact.center().y, height, host.height),
                     ),
                 };
                 Region {
@@ -1099,14 +1112,14 @@ impl Shell {
                 }
             }
             _ => Region {
-                left: 0,
-                top: 0,
-                right: host.width,
-                bottom: host.height,
+                left: compact.left() as i32,
+                top: compact.top() as i32,
+                right: compact.right() as i32,
+                bottom: compact.bottom() as i32,
                 shoulder: None,
                 flat_edge: self.flat_edge,
                 diameter: ((radius * host.dpi as f32 / 48.0).round() as i32)
-                    .clamp(1, host.width.min(host.height)),
+                    .clamp(1, compact.width().min(compact.height()) as i32),
             },
         };
         self.set_region(region);

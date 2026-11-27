@@ -6,7 +6,7 @@ use std::{
 use chrono::{Local, TimeZone};
 use eframe::egui::{self, RichText, Ui};
 
-use super::{card, subhead, title};
+use super::{card, in_capsule, subhead, title};
 use crate::{
     ai_usage::{ProviderUsage, UsageReport},
     workspace::Store,
@@ -101,22 +101,44 @@ impl AiMeter {
         let mut enabled = was_enabled;
         let mut pinned = store.state().settings.capsule_ai_usage;
         let mut save_error = None;
-        card(ui, |ui| {
-            subhead(ui, "本机使用记录");
-            ui.checkbox(&mut enabled, "读取 Codex 与 Claude Code 的本机用量");
-            ui.weak("按本机日期统计今天和最近 7 天的 token。订阅限额使用客户端记录的百分比。");
-            if enabled {
-                ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(&mut pinned, "在横向收起的胶囊显示今日用量");
+        let compact = in_capsule(ui);
+        let options = |ui: &mut Ui, enabled: &mut bool, pinned: &mut bool| {
+            ui.checkbox(enabled, "读取 Codex 和 Claude Code 用量")
+                .on_hover_text("按本机日期统计今天和近 7 天用量，订阅限额来自客户端记录。");
+            if *enabled {
+                ui.checkbox(pinned, "在胶囊显示今日用量");
+            }
+        };
+        if compact {
+            ui.horizontal_wrapped(|ui| {
+                if was_enabled {
+                    ui.menu_button("本机统计设置", |ui| {
+                        options(ui, &mut enabled, &mut pinned)
+                    });
                     if ui
-                        .add_enabled(self.worker.is_none(), egui::Button::new("刷新用量"))
+                        .add_enabled(self.worker.is_none(), egui::Button::new("刷新"))
                         .clicked()
                     {
                         self.refresh_at = None;
                     }
-                });
-            }
-        });
+                } else {
+                    ui.checkbox(&mut enabled, "读取本机用量")
+                        .on_hover_text("读取 Codex 和 Claude Code 保存在本机的用量记录。");
+                }
+            });
+        } else {
+            card(ui, |ui| {
+                subhead(ui, "本机使用记录");
+                options(ui, &mut enabled, &mut pinned);
+                if enabled
+                    && ui
+                        .add_enabled(self.worker.is_none(), egui::Button::new("刷新用量"))
+                        .clicked()
+                {
+                    self.refresh_at = None;
+                }
+            });
+        }
         if (was_enabled != enabled || pinned != store.state().settings.capsule_ai_usage)
             && let Err(error) = store.update(|state| {
                 state.settings.local_ai_usage = enabled;
@@ -134,8 +156,17 @@ impl AiMeter {
             ui.label("读取用量中断，可点击刷新重试。");
         }
         if let Some(report) = &self.report {
-            for (name, usage) in [("Codex", &report.codex), ("Claude Code", &report.claude)] {
-                card(ui, |ui| usage_card(ui, name, usage));
+            if compact && ui.available_width() >= 420.0 {
+                ui.columns(2, |columns| {
+                    card(&mut columns[0], |ui| usage_card(ui, "Codex", &report.codex));
+                    card(&mut columns[1], |ui| {
+                        usage_card(ui, "Claude Code", &report.claude)
+                    });
+                });
+            } else {
+                for (name, usage) in [("Codex", &report.codex), ("Claude Code", &report.claude)] {
+                    card(ui, |ui| usage_card(ui, name, usage));
+                }
             }
         } else if self.worker.is_some() {
             ui.horizontal(|ui| {

@@ -14,7 +14,7 @@ use windows_sys::Win32::System::DataExchange::{
 };
 use windows_sys::core::w;
 
-use super::{card, title};
+use super::{card, in_capsule, title};
 
 const LIMIT: usize = 30;
 const MAX_TEXT: usize = 32 * 1024;
@@ -215,27 +215,46 @@ impl ClipboardHistory {
     pub fn show(&mut self, ui: &mut Ui, directory: &Path) {
         self.load(directory);
         title(ui, "剪贴板");
+        let compact = in_capsule(ui);
         let mut next = self.state.clone();
         let mut changed = false;
-        ui.weak("记录最近 30 条复制文字。固定的条目会保留，历史由当前 Windows 账户加密保存。");
-        if ui
-            .checkbox(&mut next.recording, "记录此后的复制内容")
-            .changed()
-        {
-            self.sequence = unsafe { GetClipboardSequenceNumber() };
-            changed = true;
-            ui.ctx().request_repaint_of(ViewportId::ROOT);
+        let has_entries = !next.entries.is_empty();
+        let mut clear = false;
+        let retention = "最近 30 条文字。固定的条目会保留，历史由当前 Windows 账户加密保存。";
+        if !compact {
+            ui.weak(retention);
         }
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .checkbox(&mut next.recording, "记录剪贴板")
+                .on_hover_text(retention)
+                .changed()
+            {
+                self.sequence = unsafe { GetClipboardSequenceNumber() };
+                changed = true;
+                ui.ctx().request_repaint_of(ViewportId::ROOT);
+            }
+            if has_entries {
+                ui.menu_button("历史", |ui| {
+                    if ui.button("清空历史").clicked() {
+                        clear = true;
+                        ui.close();
+                    }
+                });
+            }
+        });
         if let Some(msg) = &self.error {
             ui.colored_label(ui.visuals().error_fg_color, msg);
         }
-        if next.entries.is_empty() {
-            card(ui, |ui| {
-                ui.label("暂无文字记录");
-            });
-        } else if ui.button("清空历史").clicked() {
+        if clear {
             next.entries.clear();
             changed = true;
+        } else if !has_entries {
+            ui.weak(if next.recording {
+                "暂无文字记录"
+            } else {
+                "记录已关闭"
+            });
         } else {
             let mut remove = None;
             for pinned_group in [true, false] {
@@ -247,39 +266,68 @@ impl ClipboardHistory {
                     .filter(|(_, e)| e.pinned == pinned_group)
                 {
                     ui.push_id(index, |ui| {
-                        card(ui, |ui| {
-                            ui.add(
-                                Label::new(RichText::new(
-                                    if crate::mailbox::is_verification(&item.text)
-                                        || crate::mailbox::looks_like_code(&item.text)
-                                    {
-                                        "验证码已隐藏".to_owned()
-                                    } else {
-                                        item.text.lines().take(3).collect::<Vec<_>>().join("  ")
-                                    },
-                                ))
-                                .truncate(),
-                            );
+                        let preview = if crate::mailbox::is_verification(&item.text)
+                            || crate::mailbox::looks_like_code(&item.text)
+                        {
+                            "验证码已隐藏".to_owned()
+                        } else {
+                            item.text.lines().take(3).collect::<Vec<_>>().join("  ")
+                        };
+                        let mut secondary = |ui: &mut Ui, menu: bool| {
+                            if ui
+                                .button(if item.pinned {
+                                    "取消固定"
+                                } else {
+                                    "固定"
+                                })
+                                .clicked()
+                            {
+                                next.entries[index].pinned = !item.pinned;
+                                changed = true;
+                                if menu {
+                                    ui.close();
+                                }
+                            }
+                            if ui.button("移除").clicked() {
+                                remove = Some(index);
+                                if menu {
+                                    ui.close();
+                                }
+                            }
+                        };
+                        let copy = |ui: &mut Ui| {
+                            if ui.button("复制").clicked() {
+                                ui.ctx().copy_text(item.text.clone());
+                            }
+                        };
+                        if compact {
                             ui.horizontal(|ui| {
-                                if ui.button("复制").clicked() {
-                                    ui.ctx().copy_text(item.text.clone());
-                                }
-                                if ui
-                                    .button(if item.pinned {
-                                        "取消固定"
-                                    } else {
-                                        "固定"
-                                    })
-                                    .clicked()
-                                {
-                                    next.entries[index].pinned = !item.pinned;
-                                    changed = true;
-                                }
-                                if ui.button("移除").clicked() {
-                                    remove = Some(index);
-                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.menu_button("更多", |ui| secondary(ui, true));
+                                        copy(ui);
+                                        ui.with_layout(
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                let text = RichText::new(preview);
+                                                let text =
+                                                    if item.pinned { text.strong() } else { text };
+                                                ui.add(Label::new(text).truncate());
+                                            },
+                                        );
+                                    },
+                                );
                             });
-                        })
+                        } else {
+                            card(ui, |ui| {
+                                ui.add(Label::new(preview).truncate());
+                                ui.horizontal(|ui| {
+                                    copy(ui);
+                                    secondary(ui, false);
+                                });
+                            });
+                        }
                     });
                 }
             }

@@ -165,6 +165,7 @@ pub struct DockSettings {
     pub edge: DockEdge,
     pub scale: u16,
     pub offset: i16,
+    pub panel_size: Option<[u16; 2]>,
     pub oled_shift: bool,
     pub minimal: bool,
     pub clock_24h: bool,
@@ -206,6 +207,7 @@ impl Default for DockSettings {
             edge: DockEdge::Top,
             scale: 100,
             offset: 0,
+            panel_size: None,
             oled_shift: false,
             minimal: false,
             clock_24h: true,
@@ -234,19 +236,31 @@ impl DockSettings {
         f32::from(self.scale) / 100.0
     }
 
+    pub const PANEL_MIN: [u16; 2] = [320, 250];
+    pub const PANEL_MAX: [u16; 2] = [1600, 1100];
+
     #[cfg(windows)]
     pub fn expanded_size(&self) -> [f32; 2] {
-        let size = match self.edge {
-            DockEdge::Top | DockEdge::Bottom => [680.0, 318.0],
-            DockEdge::Left | DockEdge::Right => [390.0, 496.0],
-        };
-        size.map(|dimension| dimension * self.factor())
+        self.panel_size
+            .map(|size| size.map(f32::from))
+            .unwrap_or_else(|| {
+                let size = match self.edge {
+                    DockEdge::Top | DockEdge::Bottom => [680.0, 318.0],
+                    DockEdge::Left | DockEdge::Right => [390.0, 496.0],
+                };
+                size.map(|dimension| dimension * self.factor())
+            })
     }
 
     pub fn validate(&self) -> Result<(), String> {
         let unique: HashSet<_> = self.pages.iter().map(|entry| entry.page).collect();
         if !(80..=140).contains(&self.scale)
             || !(-100..=100).contains(&self.offset)
+            || self.panel_size.is_some_and(|size| {
+                (0..2).any(|axis| {
+                    !(Self::PANEL_MIN[axis]..=Self::PANEL_MAX[axis]).contains(&size[axis])
+                })
+            })
             || self.resident_order.iter().collect::<HashSet<_>>().len() != Resident::ALL.len()
             || unique.len() != CapsulePage::ALL.len()
             || self.pages.len() != CapsulePage::ALL.len()
@@ -459,16 +473,25 @@ mod tests {
     }
 
     #[test]
-    fn bottom_edge_round_trips_through_settings() {
+    fn bottom_edge_and_panel_size_round_trip_through_settings() {
         let settings = DockSettings {
             edge: DockEdge::Bottom,
+            panel_size: Some([720, 380]),
             ..DockSettings::default()
         };
-        let json = serde_json::to_value(&settings).unwrap();
+        settings.validate().unwrap();
+        let mut json = serde_json::to_value(&settings).unwrap();
         assert_eq!(json["edge"], "bottom");
         assert_eq!(
-            serde_json::from_value::<DockSettings>(json).unwrap(),
+            serde_json::from_value::<DockSettings>(json.clone()).unwrap(),
             settings
+        );
+        json.as_object_mut().unwrap().remove("panelSize");
+        assert_eq!(
+            serde_json::from_value::<DockSettings>(json)
+                .unwrap()
+                .panel_size,
+            None
         );
     }
 

@@ -249,7 +249,7 @@ impl Player {
 
 impl Player {
     pub(super) fn capsule(&mut self, ui: &mut Ui, media: &mut Media, scale: f32) {
-        let side = 78.0 * scale;
+        let side = 64.0 * scale;
         if let Status::Ready(track) = media.status() {
             let track = Arc::clone(track);
             ui.horizontal(|ui| {
@@ -299,15 +299,18 @@ impl Player {
                             ui.weak("正在读取 Windows 媒体会话");
                         }
                         Status::NoSession => {
-                            ui.strong("暂无播放会话");
-                            ui.weak("在支持 Windows 媒体控制的播放器中播放音乐。");
+                            ui.strong("暂无媒体播放");
                         }
                         Status::Error(error) => {
                             ui.colored_label(ui.visuals().error_fg_color, error);
                         }
                         Status::Ready(_) => unreachable!(),
                     }
-                    if ui.button("刷新播放信息").clicked() {
+                    if ui
+                        .button("刷新")
+                        .on_hover_text("刷新 Windows 媒体会话")
+                        .clicked()
+                    {
                         media.refresh();
                     }
                 });

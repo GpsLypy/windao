@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 use super::{Job, Result};
-use crate::ui::{card, primary, subhead, tasks::quick_task, title};
+use crate::ui::{card, in_capsule, primary, subhead, tasks::quick_task, title};
 use crate::workspace::Store;
 
 const MODEL: &str = "deepseek-v4-flash";
@@ -41,31 +41,20 @@ struct Reply {
 impl Chat {
     pub(super) fn show(&mut self, ui: &mut Ui, store: &mut Store) {
         title(ui, "AI 工作台");
+        let compact = in_capsule(ui);
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.assistant, false, "对话");
             ui.selectable_value(&mut self.assistant, true, "智能助理");
-            #[cfg(windows)]
-            if ui.button("打开 DeepSeek 网页").clicked()
-                && let Err(e) = crate::windows::open_web_link("https://chat.deepseek.com/")
-            {
-                self.current().error = format!("无法打开网页（{e}）。");
+            if compact {
+                ui.menu_button("API Key", |ui| self.key_editor(ui, true));
+            } else {
+                self.web_link(ui);
             }
         });
-        ui.add_space(6.0);
-        card(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label("DeepSeek API Key");
-                let mut editor = TextEdit::singleline(&mut *self.key)
-                    .hint_text("仅在本次使用")
-                    .password(true)
-                    .char_limit(512)
-                    .desired_width(190.0)
-                    .show(ui);
-                editor.state.clear_undoer();
-                editor.state.store(ui.ctx(), editor.response.id);
-            });
-            ui.weak("发送后，当前对话内容将提交至 DeepSeek。");
-        });
+        if !compact {
+            ui.add_space(6.0);
+            card(ui, |ui| self.key_editor(ui, false));
+        }
         let assistant = self.assistant;
         let (active, key) = if assistant {
             (&mut self.helper, &self.key)
@@ -73,6 +62,34 @@ impl Chat {
             (&mut self.dialogue, &self.key)
         };
         active.show(ui, store, key, assistant);
+    }
+
+    fn key_editor(&mut self, ui: &mut Ui, compact: bool) {
+        ui.horizontal_wrapped(|ui| {
+            let label = ui.label("DeepSeek API Key");
+            let mut editor = TextEdit::singleline(&mut *self.key)
+                .hint_text("仅在本次使用")
+                .password(true)
+                .char_limit(512)
+                .desired_width(160.0)
+                .show(ui);
+            editor.response.response.clone().labelled_by(label.id);
+            editor.state.clear_undoer();
+            editor.state.store(ui.ctx(), editor.response.id);
+        });
+        ui.weak("发送后，当前对话内容将提交至 DeepSeek。");
+        if compact {
+            self.web_link(ui);
+        }
+    }
+
+    fn web_link(&mut self, _ui: &mut Ui) {
+        #[cfg(windows)]
+        if _ui.button("打开 DeepSeek 网页").clicked()
+            && let Err(error) = crate::windows::open_web_link("https://chat.deepseek.com/")
+        {
+            self.current().error = format!("无法打开网页（{error}）。");
+        }
     }
 
     #[cfg(windows)]
@@ -98,59 +115,75 @@ impl Conversation {
                 Err(error) => self.error = error,
             }
         }
-        for turn in &mut self.turns {
-            card(ui, |ui| {
-                ui.weak("你");
-                ui.label(&turn.question);
-                ui.separator();
-                subhead(
-                    ui,
-                    if assistant {
-                        "智能助理"
-                    } else {
-                        "DeepSeek"
-                    },
-                );
-                ui.label(&turn.answer.reply);
-                if ui.small_button("复制回复").clicked() {
-                    ui.ctx().copy_text(turn.answer.reply.clone());
-                }
-                if let Some(name) = &mut turn.answer.task {
+        let compact = in_capsule(ui);
+        let has_history = !self.turns.is_empty();
+        let mut history = |ui: &mut Ui| {
+            for turn in &mut self.turns {
+                card(ui, |ui| {
+                    ui.weak("你");
+                    ui.label(&turn.question);
                     ui.separator();
-                    if turn.saved {
-                        ui.weak(format!("已加入待办 · {name}"));
-                    } else {
-                        ui.label("建议待办");
-                        ui.add(
-                            TextEdit::singleline(name)
-                                .char_limit(500)
-                                .desired_width(f32::INFINITY),
-                        );
-                        if ui.button("确认加入待办").clicked() {
-                            match save_task(store, name) {
-                                Ok(()) => {
-                                    turn.saved = true;
-                                    self.error.clear();
+                    subhead(
+                        ui,
+                        if assistant {
+                            "智能助理"
+                        } else {
+                            "DeepSeek"
+                        },
+                    );
+                    ui.label(&turn.answer.reply);
+                    if ui.small_button("复制回复").clicked() {
+                        ui.ctx().copy_text(turn.answer.reply.clone());
+                    }
+                    if let Some(name) = &mut turn.answer.task {
+                        ui.separator();
+                        if turn.saved {
+                            ui.weak(format!("已加入待办 · {name}"));
+                        } else {
+                            ui.label("建议待办");
+                            ui.add(
+                                TextEdit::singleline(name)
+                                    .char_limit(500)
+                                    .desired_width(f32::INFINITY),
+                            );
+                            if ui.button("确认加入待办").clicked() {
+                                match save_task(store, name) {
+                                    Ok(()) => {
+                                        turn.saved = true;
+                                        self.error.clear();
+                                    }
+                                    Err(e) => self.error = e,
                                 }
-                                Err(e) => self.error = e,
                             }
                         }
                     }
-                }
-            });
+                });
+            }
+        };
+        if compact && has_history {
+            let height = (ui.clip_rect().bottom() - ui.cursor().top() - 100.0).max(54.0);
+            egui::ScrollArea::vertical()
+                .id_salt(("chat-history", assistant))
+                .max_height(height)
+                .stick_to_bottom(true)
+                .show(ui, history);
+        } else {
+            history(ui);
         }
         let idle = self.pending.is_none();
         card(ui, |ui| {
-            subhead(
-                ui,
-                if assistant {
-                    "交给智能助理"
-                } else {
-                    "发送消息"
-                },
-            );
+            if !compact {
+                subhead(
+                    ui,
+                    if assistant {
+                        "交给智能助理"
+                    } else {
+                        "发送消息"
+                    },
+                );
+            }
             let hint = if assistant {
-                "例如：帮我把整理会议纪要记为待办"
+                "交给智能助理…"
             } else {
                 "输入你的问题…"
             };
@@ -158,7 +191,7 @@ impl Conversation {
                 idle,
                 TextEdit::multiline(&mut self.draft)
                     .hint_text(hint)
-                    .desired_rows(3)
+                    .desired_rows(if compact { 2 } else { 3 })
                     .char_limit(4000)
                     .desired_width(f32::INFINITY),
             );
@@ -166,9 +199,19 @@ impl Conversation {
                 if ui
                     .add_enabled_ui(
                         idle && !key.trim().is_empty() && !self.draft.trim().is_empty(),
-                        |ui| primary(ui, "发送"),
+                        |ui| {
+                            primary(
+                                ui,
+                                if compact {
+                                    "发送至 DeepSeek"
+                                } else {
+                                    "发送"
+                                },
+                            )
+                        },
                     )
                     .inner
+                    .on_disabled_hover_text("输入 API Key 和消息后发送")
                     .clicked()
                 {
                     let body = self.request(assistant);

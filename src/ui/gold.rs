@@ -49,7 +49,10 @@ impl Gold {
         }
         self.poll();
         card(ui, |ui| {
-            subhead(ui, "现货金价");
+            let compact = super::in_capsule(ui);
+            if !compact {
+                subhead(ui, "现货金价");
+            }
             if let Some(quote) = &self.quote {
                 let color = if ui.visuals().dark_mode {
                     Color32::from_rgb(234, 195, 113)
@@ -62,13 +65,10 @@ impl Gold {
                         .size(28.0)
                         .strong(),
                 );
-                ui.label("XAU · 美元 / 金衡盎司");
-                ui.weak(format!(
-                    "Gold API · 报价时间 {}",
+                ui.label("XAU · 美元 / 金衡盎司").on_hover_text(format!(
+                    "Gold API · {}",
                     quote.updated_at.format("%Y-%m-%d %H:%M:%S UTC")
                 ));
-            } else {
-                ui.weak("点击刷新，从 Gold API 获取 XAU 报价。");
             }
             if let Some(error) = &self.error {
                 ui.colored_label(ui.visuals().error_fg_color, error);

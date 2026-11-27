@@ -8,15 +8,18 @@ use eframe::egui::{
 
 use crate::{
     dock::{CapsuleShape, CapsuleSkin, DockEdge, DockSettings, Resident},
-    workspace::{Focus, Store, Task, TaskStatus, Workspace},
+    workspace::{Focus, Store, Task, Workspace},
 };
 
 #[cfg(windows)]
 use super::FeatureSources;
 use super::{CapsuleFrame, Page, ShellAction, Workbench, calendar, focus};
 
+use egui::emath::GuiRounding as _;
+
 mod companion;
 mod launcher;
+mod motion;
 mod resident;
 
 pub(crate) mod silhouette;
@@ -41,7 +44,10 @@ pub(crate) struct CapsuleOptions<'a> {
 
 #[derive(Default)]
 pub(crate) struct CapsuleState {
+    motion: motion::Transition,
     calendar: calendar::Calendar,
+    tasks: super::desktop_todo::DesktopTodo,
+    focus_reset_confirmation: Option<uuid::Uuid>,
     #[cfg(windows)]
     player: super::music::Player,
     active: Option<Page>,
@@ -68,7 +74,13 @@ impl CapsuleState {
         self.active = None;
         self.library_open = false;
         self.library_query.clear();
+        self.focus_reset_confirmation = None;
         self.calendar.select_date(Local::now().date_naive());
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn open_page(&mut self, page: Page) {
+        self.active = Some(page);
     }
 
     #[cfg(windows)]
@@ -151,16 +163,31 @@ pub(crate) fn draw(
     workbench: &mut Workbench,
     #[cfg(windows)] sources: &mut FeatureSources,
 ) -> CapsuleFrame {
+    let expanded = options.expanded && !options.avoiding && !options.hidden;
+    let instant = options.reduce_motion || options.avoiding || options.hidden;
+    let progress = state
+        .motion
+        .update(root.input(|input| input.time), expanded, instant);
+    if !state.motion.settled() {
+        root.ctx().request_repaint();
+    }
     if options.hidden {
         return CapsuleFrame {
             action: None,
             rect: Rect::NOTHING,
             radius: 0,
             shoulder: None,
+            #[cfg(windows)]
+            resizing: false,
+            hover_rect: None,
+            #[cfg(windows)]
+            progress,
         };
     }
     let ctx = root.ctx().clone();
     let dock = &store.state().settings.dock;
+    #[cfg(windows)]
+    let leading_grip = dock.offset > 0;
     let light = matches!(dock.skin, CapsuleSkin::Cream | CapsuleSkin::GlassLight);
     root.set_style(ctx.style_of(if light {
         egui::Theme::Light
@@ -178,18 +205,10 @@ pub(crate) fn draw(
     let cover = None;
     let tone = Palette::for_skin(dock.skin, cover);
     tone.apply(root);
-    let progress = ctx.animate_bool_with_time_and_easing(
-        Id::new("capsule-shape"),
-        options.expanded && !options.avoiding,
-        if options.reduce_motion || options.avoiding {
-            0.0
-        } else {
-            0.25
-        },
-        egui::emath::easing::cubic_out,
-    );
     let available = root.max_rect();
-    let rect = shape_rect(available, &options, progress);
+    let pixels_per_point = ctx.pixels_per_point();
+    let rect = shape_rect(available, &options, progress).round_to_pixels(pixels_per_point);
+    let compact = shape_rect(available, &options, 0.0).round_to_pixels(pixels_per_point);
     let radius = if options.avoiding {
         2
     } else {
@@ -210,13 +229,18 @@ pub(crate) fn draw(
             let end = (28.0 * options.scale)
                 .min(rect.width() / 4.0)
                 .min(rect.height() / 3.0);
-            egui::lerp(start..=end, progress)
+            egui::lerp(start..=end, progress).round_to_pixels(pixels_per_point)
         });
     let mut frame = CapsuleFrame {
         action: None,
         rect,
         radius,
         shoulder,
+        hover_rect: None,
+        #[cfg(windows)]
+        resizing: false,
+        #[cfg(windows)]
+        progress,
     };
     if options.avoiding {
         let strip = root.interact(rect, Id::new("capsule-edge-strip"), egui::Sense::click());
@@ -289,31 +313,68 @@ pub(crate) fn draw(
             skin::cloud_glow(root.painter(), rect, corners, pointer, tone.signal, true);
         }
     }
-    if options.expanded && progress > 0.68 {
-        let content = body.shrink(14.0 * options.scale);
+    let slots = resident::layout(compact, store, state, &options);
+    let clock_rect = slots[Resident::Clock as usize].unwrap_or(compact);
+    if !options.expanded && store.state().settings.open_on_hover && state.system_change.is_none() {
+        frame.hover_rect = Some(clock_rect);
+    }
+    let panel_opacity = motion::panel_opacity(progress);
+    if panel_opacity > 0.0 {
+        let inset = if shoulder.is_some() {
+            (28.0 * options.scale)
+                .min(available.width() / 4.0)
+                .min(available.height() / 3.0)
+        } else {
+            0.0
+        };
+        let mut content = available.shrink(14.0 * options.scale);
+        content.min.x += inset;
+        content.max.x -= inset;
+        // Lay out at full size and let the leading edge carry the header into view.
+        // Reflowing columns as the silhouette grows would make controls jump.
+        let content = content.translate(body.min - (available.min + vec2(inset, 0.0)));
         if content.is_positive() {
-            root.scope_builder(UiBuilder::new().max_rect(content), |ui| {
-                ui.set_clip_rect(ui.clip_rect().intersect(content));
-                ui.set_opacity(((progress - 0.68) / 0.32).clamp(0.0, 1.0));
-                scale_style(ui, options.scale);
-                frame.action = expanded_content(
-                    ui,
-                    store,
-                    state,
-                    &options,
-                    workbench,
-                    #[cfg(windows)]
-                    sources,
-                );
+            let interactive = options.expanded && panel_opacity >= 0.5;
+            let builder = UiBuilder::new().id_salt("capsule-panel").max_rect(content);
+            let mut panel = root.new_child(if interactive {
+                builder
+            } else {
+                builder.disabled()
             });
+            panel.set_clip_rect(panel.clip_rect().intersect(body).intersect(content));
+            panel.set_opacity(panel_opacity);
+            scale_style(&mut panel, options.scale);
+            let action = expanded_content(
+                &mut panel,
+                store,
+                state,
+                &options,
+                workbench,
+                #[cfg(windows)]
+                sources,
+            );
+            if interactive {
+                frame.action = action;
+            }
         }
-    } else if !options.expanded && progress <= 0.06 {
+    }
+    if panel_opacity < 1.0 {
+        let builder = UiBuilder::new()
+            .id_salt("capsule-residents")
+            .max_rect(compact);
+        let interactive = !options.expanded && panel_opacity <= 0.5;
+        let mut layer = root.new_child(if interactive {
+            builder
+        } else {
+            builder.disabled()
+        });
+        let root = &mut layer;
+        root.set_clip_rect(root.clip_rect().intersect(body).intersect(compact));
+        root.set_opacity(1.0 - panel_opacity);
         #[cfg(windows)]
         let playing = matches!(sources.media.status(),crate::music::Status::Ready(track) if track.state==crate::music::PlaybackState::Playing);
         #[cfg(not(windows))]
         let playing = false;
-        let slots = resident::layout(rect, store, state, &options);
-        let clock_rect = slots[Resident::Clock as usize].unwrap_or(rect);
         if let Some(area) = slots[Resident::Companion as usize] {
             draw_companion(
                 root,
@@ -328,8 +389,13 @@ pub(crate) fn draw(
             && let Some(caption) = &state.ai_caption
         {
             let response = root.interact(area, Id::new("compact-ai"), egui::Sense::click());
-            response
-                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, caption));
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    true,
+                    format!("打开 AI 用量 · {caption}"),
+                )
+            });
             root.scope_builder(UiBuilder::new().max_rect(area), |ui| {
                 ui.set_clip_rect(ui.clip_rect().intersect(area));
                 let inset = 5. * options.scale;
@@ -343,9 +409,9 @@ pub(crate) fn draw(
                 );
             });
             if response.clicked() {
-                frame.action = Some(ShellAction::OpenWorkbench(Page::AiUsage));
+                frame.action = Some(resident_page(Page::AiUsage, options.pages));
             }
-            response.on_hover_text(caption);
+            response.on_hover_text(format!("打开 AI 用量 · {caption}"));
         }
         if let Some(message) = &state.system_change {
             let response = root.interact(
@@ -386,8 +452,8 @@ pub(crate) fn draw(
             }
             response.on_hover_text(message);
         } else {
-            frame.action = compact_content(root, clock_rect, corners, store, &options, playing)
-                .or(frame.action);
+            frame.action = compact_content(root, clock_rect, store, &options, playing)
+                .or_else(|| frame.action.take());
         }
         if let Some(strip) = slots[Resident::Weather as usize]
             && let Some(text) = &state.weather_caption
@@ -435,8 +501,9 @@ pub(crate) fn draw(
             });
             #[cfg(windows)]
             if response.clicked() {
-                frame.action = Some(ShellAction::OpenWorkbench(Page::Performance));
+                frame.action = Some(resident_page(Page::Performance, options.pages));
             }
+            response.on_hover_text("打开系统监控");
         }
         if let Some(badge) = slots[Resident::Alerts as usize] {
             let scale = options.scale;
@@ -452,7 +519,63 @@ pub(crate) fn draw(
             alert.on_hover_text(label);
         }
     }
+    #[cfg(windows)]
+    if options.expanded && progress >= 0.99 {
+        let left =
+            options.dock == DockEdge::Right || (options.dock.is_horizontal() && leading_grip);
+        let top =
+            options.dock == DockEdge::Bottom || (!options.dock.is_horizontal() && leading_grip);
+        let corner = pos2(
+            if left {
+                body.left() + 8.0
+            } else {
+                body.right() - 8.0
+            },
+            if top {
+                body.top() + 8.0
+            } else {
+                body.bottom() - 8.0
+            },
+        );
+        let direction = vec2(if left { 1.0 } else { -1.0 }, if top { 1.0 } else { -1.0 });
+        let center = corner + direction * 4.0;
+        let resize = root
+            .interact(
+                Rect::from_center_size(center, Vec2::splat(21.0)),
+                Id::new("capsule-resize"),
+                egui::Sense::drag(),
+            )
+            .on_hover_and_drag_cursor(if left != top {
+                egui::CursorIcon::ResizeNeSw
+            } else {
+                egui::CursorIcon::ResizeNwSe
+            });
+        let painter = root.painter();
+        let color = if resize.hovered() || resize.dragged() {
+            tone.signal
+        } else {
+            tone.caption
+        };
+        for length in [4.0, 8.0] {
+            painter.line_segment(
+                [
+                    corner + vec2(direction.x * length, 0.0),
+                    corner + vec2(0.0, direction.y * length),
+                ],
+                Stroke::new(1.0_f32, color),
+            );
+        }
+        frame.resizing = resize.dragged_by(egui::PointerButton::Primary);
+    }
     frame
+}
+
+fn resident_page(page: Page, pages: &[Page]) -> ShellAction {
+    if pages.contains(&page) {
+        ShellAction::ExpandPage(page)
+    } else {
+        ShellAction::OpenWorkbench(page)
+    }
 }
 
 fn shape_rect(available: Rect, options: &CapsuleOptions<'_>, progress: f32) -> Rect {
@@ -511,7 +634,6 @@ fn draw_companion(
 fn compact_content(
     ui: &mut Ui,
     rect: Rect,
-    radius: egui::CornerRadius,
     store: &Store,
     options: &CapsuleOptions<'_>,
     playing: bool,
@@ -535,16 +657,21 @@ fn compact_content(
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &action_label));
     let highlighted = response.hovered() || response.has_focus();
-    if highlighted {
-        ui.painter().rect_stroke(
-            rect.shrink(1.0),
-            radius,
-            Stroke::new(1.2_f32, tone.signal),
-            StrokeKind::Inside,
-        );
-    }
     let s = options.scale;
     let painter = ui.painter().with_clip_rect(rect);
+    if response.has_focus() && !response.hovered() {
+        let underline = if options.dock.is_horizontal() {
+            vec2(13.0, 1.5)
+        } else {
+            vec2(1.5, 13.0)
+        } * s;
+        let center = if options.dock.is_horizontal() {
+            pos2(rect.center().x, rect.bottom() - 3.5 * s)
+        } else {
+            pos2(rect.right() - 3.5 * s, rect.center().y)
+        };
+        painter.rect_filled(Rect::from_center_size(center, underline), 1, tone.signal);
+    }
     let mut rect = rect;
     if store.state().settings.dock.companion && !options.minimal && !options.dock.is_horizontal() {
         let center = pos2(rect.center().x, rect.bottom() - 15.0 * s);
@@ -697,8 +824,7 @@ fn compact_content(
         );
         ui.ctx().request_repaint_after(Duration::from_secs(1));
     }
-    (response.clicked() || (response.hovered() && store.state().settings.open_on_hover))
-        .then_some(ShellAction::Expand)
+    response.clicked().then_some(ShellAction::Expand)
 }
 
 fn truncated_text(
@@ -882,18 +1008,29 @@ fn expanded_content(
             }
         }
     }
+    let compact_header = ui.available_width() < 310.0 * s;
     ui.horizontal(|ui| {
         if let Some(active) = state.active {
+            let title_width = (ui.available_width() - 132.0 * s).max(52.0 * s);
             Frame::new()
                 .fill(tone.card)
                 .corner_radius(15)
                 .inner_margin(Margin::symmetric((8.0 * s) as i8, (3.0 * s) as i8))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        if compact_header {
+                            ui.set_max_width(title_width);
+                        }
                         let (icon, _) =
                             ui.allocate_exact_size(vec2(15.0, 17.0) * s, egui::Sense::hover());
                         super::navigation::draw_icon(ui, active, icon.center(), tone.signal, s);
-                        caption(ui, active.title(), 12.0 * s, tone.ink, true);
+                        let label = egui::Label::new(
+                            RichText::new(active.title())
+                                .size(12.0 * s)
+                                .color(tone.ink)
+                                .strong(),
+                        );
+                        ui.add(label.truncate()).on_hover_text(active.title());
                     });
                 });
         }
@@ -923,31 +1060,36 @@ fn expanded_content(
         } else {
             "固定"
         };
-        if toolbar_button(ui, pin_label, options.pinned, s, |p, c, stroke| {
-            let pt = |x, y| c + vec2(x, y) * s;
-            p.line_segment([pt(-3.0, -6.0), pt(3.0, -6.0)], stroke);
-            p.add(egui::Shape::closed_line(
-                vec![
-                    pt(-2.0, -5.5),
-                    pt(2.0, -5.5),
-                    pt(2.0, -1.0),
-                    pt(4.5, 2.0),
-                    pt(-4.5, 2.0),
-                    pt(-2.0, -1.0),
-                ],
-                stroke,
-            ));
-            p.line_segment([pt(0.0, 2.0), pt(0.0, 7.0)], stroke);
-        }) {
+        if !compact_header
+            && toolbar_button(ui, pin_label, options.pinned, s, |p, c, stroke| {
+                let pt = |x, y| c + vec2(x, y) * s;
+                p.line_segment([pt(-3.0, -6.0), pt(3.0, -6.0)], stroke);
+                p.add(egui::Shape::closed_line(
+                    vec![
+                        pt(-2.0, -5.5),
+                        pt(2.0, -5.5),
+                        pt(2.0, -1.0),
+                        pt(4.5, 2.0),
+                        pt(-4.5, 2.0),
+                        pt(-2.0, -1.0),
+                    ],
+                    stroke,
+                ));
+                p.line_segment([pt(0.0, 2.0), pt(0.0, 7.0)], stroke);
+            })
+        {
             action = Some(ShellAction::SetPinned(!options.pinned));
         }
+        let open_action = |page| {
+            if page == Page::Calendar {
+                ShellAction::OpenCalendar(state.calendar.selected_date())
+            } else {
+                ShellAction::OpenWorkbench(page)
+            }
+        };
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if let Some(active) = state.active {
-                let label = if active == Page::Today {
-                    "打开工作台".to_owned()
-                } else {
-                    format!("打开{}", active.title())
-                };
+            if !compact_header && let Some(active) = state.active {
+                let label = workbench_label(active);
                 if toolbar_button(ui, &label, false, s, |p, c, stroke| {
                     let pt = |x, y| c + vec2(x, y) * s;
                     p.add(egui::Shape::line(
@@ -968,11 +1110,7 @@ fn expanded_content(
                         stroke,
                     ));
                 }) {
-                    action = Some(if active == Page::Calendar {
-                        ShellAction::OpenCalendar(state.calendar.selected_date())
-                    } else {
-                        ShellAction::OpenWorkbench(active)
-                    });
+                    action = Some(open_action(active));
                 }
             }
             if toolbar_button(ui, "收起", false, s, |p, c, stroke| {
@@ -987,7 +1125,28 @@ fn expanded_content(
             }) {
                 action = Some(ShellAction::Collapse);
             }
-            if toolbar_button(ui, "设置", false, s, |p, c, stroke| {
+            if compact_header {
+                let menu = ui.add_sized(Vec2::splat(28.0 * s), Button::new("···").frame(false));
+                menu.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "更多操作")
+                });
+                egui::Popup::menu(&menu.on_hover_text("更多操作")).show(|ui| {
+                    if ui.button(pin_label).clicked() {
+                        action = Some(ShellAction::SetPinned(!options.pinned));
+                        ui.close();
+                    }
+                    if let Some(active) = state.active
+                        && ui.button(workbench_label(active)).clicked()
+                    {
+                        action = Some(open_action(active));
+                        ui.close();
+                    }
+                    if ui.button("设置").clicked() {
+                        action = Some(ShellAction::OpenWorkbench(Page::Settings));
+                        ui.close();
+                    }
+                });
+            } else if toolbar_button(ui, "设置", false, s, |p, c, stroke| {
                 for (y, x) in [(-3.0, -2.0), (3.0, 2.0)] {
                     p.line_segment([c + vec2(-6.0, y) * s, c + vec2(x - 1.5, y) * s], stroke);
                     p.circle_stroke(c + vec2(x, y) * s, 1.5 * s, stroke);
@@ -998,7 +1157,7 @@ fn expanded_content(
             }
         });
     });
-    ui.add_space(9.0 * s);
+    ui.add_space(4.0 * s);
     if let Some(error) = &state.error {
         caption(ui, error, 12.0 * s, ui.visuals().error_fg_color, false);
     }
@@ -1028,66 +1187,76 @@ fn expanded_content(
         }
         return action;
     };
+    let height = (dock_rect.top() - ui.cursor().top() - 4.0 * s).max(0.0);
+    if page == Page::Tasks {
+        let content = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), height));
+        ui.scope_builder(UiBuilder::new().max_rect(content), |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(content));
+            state.tasks.show_list(ui, store);
+        });
+        return action;
+    }
+    if page == Page::Notes {
+        if let Some(result) = workbench.scratchpad_editor(ui, store, Some(height)) {
+            state.error = result.err();
+        }
+        return action;
+    }
     ScrollArea::vertical()
         .id_salt(("capsule-panel", page.title()))
-        .max_height((dock_rect.top() - ui.cursor().top() - 8.0 * s).max(0.0))
+        .max_height(height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let workspace = store.state();
             if page == Page::Calendar {
                 let selected = state.calendar.selected_date();
                 let agenda = |ui: &mut Ui| {
-                    page_heading(
-                        ui,
-                        format!("{} {}", selected.format("%-d"), calendar::weekday(selected)),
-                        s,
-                    );
-                    caption(
-                        ui,
-                        selected.format("%Y年%-m月").to_string(),
-                        12.0 * s,
-                        tone.caption,
-                        false,
-                    );
-                    if let Some(lunar) = calendar::lunar_caption(selected) {
-                        caption(ui, lunar, 12.0 * s, tone.caption, false);
-                    }
-                    ui.add_space(3.0 * s);
-                    surface(ui, s, |ui| {
-                        section_heading(ui, "当日日程", s);
-                        schedule(ui, workspace, selected, options.clock_24h, 5, s);
+                    ui.horizontal_wrapped(|ui| {
+                        section_heading(
+                            ui,
+                            format!(
+                                "{} {}",
+                                selected.format("%-m月%-d日"),
+                                calendar::weekday(selected)
+                            ),
+                            s,
+                        );
+                        if let Some(lunar) = calendar::lunar_caption(selected) {
+                            caption(ui, lunar, 12.0 * s, tone.caption, false);
+                        }
                     });
+                    schedule(ui, workspace, selected, options.clock_24h, usize::MAX, s);
                 };
                 if ui.available_width() >= 430.0 * s {
                     ui.columns(2, |cols| {
                         agenda(&mut cols[0]);
-                        state
-                            .calendar
-                            .month(&mut cols[1], &workspace.events, date, Some(s));
+                        state.calendar.month(
+                            &mut cols[1],
+                            &workspace.events,
+                            date,
+                            Some((s, height)),
+                        );
                     });
                 } else {
+                    state
+                        .calendar
+                        .month(ui, &workspace.events, date, Some((s, height)));
                     agenda(ui);
-                    state.calendar.month(ui, &workspace.events, date, Some(s));
                 }
                 return;
             }
             if page == Page::Today {
-                page_heading(
-                    ui,
-                    format!("{}  {}", date.format("%-d"), calendar::weekday(date)),
-                    s,
-                );
-                if let Some(lunar) = calendar::lunar_caption(date) {
-                    caption(
+                ui.horizontal_wrapped(|ui| {
+                    section_heading(
                         ui,
-                        format!("{}   {lunar}", date.format("%Y年%-m月")),
-                        12.0 * s,
-                        tone.caption,
-                        false,
+                        format!("{} {}", date.format("%-m月%-d日"), calendar::weekday(date)),
+                        s,
                     );
-                }
+                    if let Some(lunar) = calendar::lunar_caption(date) {
+                        caption(ui, lunar, 12.0 * s, tone.caption, false);
+                    }
+                });
             }
-            ui.add_space(3.0 * s);
             match page {
                 Page::Today => {
                     let tasks = today_tasks(workspace, &now);
@@ -1101,27 +1270,14 @@ fn expanded_content(
                         &mut action,
                     );
                 }
-                Page::Tasks => surface(ui, s, |ui| {
-                    let tasks = today_tasks(workspace, &now);
-                    let done = workspace
-                        .tasks
-                        .iter()
-                        .filter(|task| {
-                            task.scheduled_on(date)
-                                && task.status_on(date) == TaskStatus::Completed
-                                && (task.repeat.is_repeating()
-                                    || task
-                                        .completed_at
-                                        .and_then(super::local_timestamp)
-                                        .is_some_and(|at| at.date_naive() == date))
-                        })
-                        .count();
-                    section_heading(ui, format!("{} 待处理 · {done} 已完成", tasks.len()), s);
-                    task_rows(ui, &tasks, 6, s, &mut action);
-                }),
                 #[cfg(windows)]
                 Page::Music => state.player.capsule(ui, &mut sources.media, s),
                 Page::Focus => {
+                    let dial_size = if ui.available_width() < 360.0 * s {
+                        84.0
+                    } else {
+                        120.0
+                    };
                     let timer = &workspace.focus;
                     let seconds = timer.seconds_left(now.timestamp_millis());
                     let tint = focus::session_color(
@@ -1129,35 +1285,26 @@ fn expanded_content(
                         timer.kind,
                         timer.duration_minutes,
                     );
-                    ui.horizontal(|ui| {
-                        focus::dial(
+                    if state.focus_reset_confirmation != timer.session_id {
+                        state.focus_reset_confirmation = None;
+                    }
+                    let mut controls = |ui: &mut Ui| {
+                        if let Some((minutes, kind)) = focus::presets(
                             ui,
-                            seconds,
                             timer.duration_minutes,
-                            focus::status(timer),
-                            tint,
-                            128.0 * s,
-                        );
-                        ui.add_space(8.0 * s);
-                        ui.vertical(|ui| {
-                            ui.set_width(ui.available_width());
-                            if !timer.label.is_empty() {
-                                ui.add(
-                                    egui::Label::new(RichText::new(&timer.label).strong())
-                                        .truncate(),
-                                );
-                            }
-                            let kind = match timer.kind {
-                                crate::workspace::FocusKind::Focus => "专注",
-                                crate::workspace::FocusKind::Break => "休息",
-                            };
-                            caption(
-                                ui,
-                                format!("{kind} · {} 分钟", timer.duration_minutes),
-                                13.0 * s,
-                                tint,
-                                true,
+                            timer.kind,
+                            timer.session_id.is_none(),
+                        ) {
+                            action = Some(ShellAction::SelectFocusPreset(minutes, kind));
+                        }
+                        if !timer.label.is_empty()
+                            && timer.kind == crate::workspace::FocusKind::Focus
+                        {
+                            ui.add(
+                                egui::Label::new(RichText::new(&timer.label).strong()).truncate(),
                             );
+                        }
+                        ui.horizontal_wrapped(|ui| {
                             let label = if timer.target_at.is_some() {
                                 "暂停计时"
                             } else if timer.session_id.is_some() {
@@ -1165,45 +1312,88 @@ fn expanded_content(
                             } else {
                                 "开始计时"
                             };
+                            let ink = if ui.visuals().dark_mode {
+                                Color32::BLACK
+                            } else {
+                                Color32::WHITE
+                            };
                             if ui
-                                .add_sized(
-                                    vec2(ui.available_width(), 30.0 * s),
-                                    Button::new(
-                                        RichText::new(label).color(Color32::BLACK).strong(),
-                                    )
-                                    .fill(tint)
-                                    .corner_radius(16),
+                                .add(
+                                    Button::new(RichText::new(label).color(ink).strong())
+                                        .min_size(vec2(88.0, 30.0) * s)
+                                        .fill(tint)
+                                        .corner_radius(16),
                                 )
                                 .clicked()
                             {
                                 action = Some(ShellAction::ToggleFocus);
                             }
+                            if let Some(session) = timer.session_id {
+                                if state.focus_reset_confirmation == Some(session) {
+                                    if ui.button("确认重置").clicked() {
+                                        action = Some(ShellAction::ResetFocus(session));
+                                        state.focus_reset_confirmation = None;
+                                    }
+                                    if ui.button("取消").clicked() {
+                                        state.focus_reset_confirmation = None;
+                                    }
+                                } else if ui.button("重置").clicked() {
+                                    state.focus_reset_confirmation = Some(session);
+                                }
+                            }
                         });
-                    });
+                    };
+                    let dial = |ui: &mut Ui| {
+                        focus::dial(
+                            ui,
+                            seconds,
+                            timer.duration_minutes,
+                            focus::status(timer),
+                            tint,
+                            dial_size * s,
+                        );
+                    };
+                    if ui.available_width() >= 210.0 * s {
+                        ui.horizontal_top(|ui| {
+                            dial(ui);
+                            ui.add_space(10.0 * s);
+                            ui.vertical(controls);
+                        });
+                    } else {
+                        controls(ui);
+                        ui.vertical_centered(dial);
+                    }
                     if timer.target_at.is_some() {
                         ui.ctx().request_repaint_after(Duration::from_secs(1));
                     }
                 }
-                Page::Notes => surface(ui, s, |ui| {
-                    let text = workspace.notes.trim();
-                    if text.is_empty() {
-                        caption(ui, "暂无便笺", 13.0 * s, tone.caption, false);
-                    } else {
-                        let preview: String = text.chars().take(650).collect();
-                        ui.label(RichText::new(preview).color(tone.ink).size(14.0 * s));
-                    }
-                }),
                 Page::Calendar | Page::Settings => unreachable!("handled outside panel content"),
-                _ => workbench.render_page(
-                    page,
-                    ui,
-                    store,
-                    #[cfg(windows)]
-                    sources,
-                ),
+                _ => {
+                    ui.scope_builder(
+                        UiBuilder::new()
+                            .ui_stack_info(egui::UiStackInfo::default().with_tag("notch-panel")),
+                        |ui| {
+                            workbench.render_page(
+                                page,
+                                ui,
+                                store,
+                                #[cfg(windows)]
+                                sources,
+                            )
+                        },
+                    );
+                }
             }
         });
     action
+}
+
+fn workbench_label(page: Page) -> String {
+    if page == Page::Today {
+        "打开工作台".into()
+    } else {
+        format!("打开{}", page.title())
+    }
 }
 
 fn toolbar_button(
@@ -1262,7 +1452,10 @@ fn surface(ui: &mut Ui, s: f32, contents: impl FnOnce(&mut Ui)) {
         .fill(tone.card)
         .corner_radius((7.0 * s).round() as u8)
         .stroke(Stroke::new(1.0_f32, tone.border))
-        .inner_margin(Margin::same((10.0 * s).round() as i8))
+        .inner_margin(Margin::symmetric(
+            (8.0 * s).round() as i8,
+            (5.0 * s).round() as i8,
+        ))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             contents(ui);
@@ -1590,7 +1783,7 @@ mod tests {
         #[cfg(windows)]
         let mut sources = FeatureSources::new(ctx.clone());
         let mut render = |events| {
-            let mut action = None;
+            let mut frame = None;
             let output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(screen),
@@ -1598,7 +1791,7 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    action = draw(
+                    frame = Some(draw(
                         ui,
                         &mut store,
                         &mut state,
@@ -1615,13 +1808,12 @@ mod tests {
                             lyrics: None,
                             clock_24h: true,
                             minimal: false,
-                            pages: &[Page::Today],
+                            pages: &[Page::Today, Page::AiUsage],
                         },
                         &mut workbench,
                         #[cfg(windows)]
                         &mut sources,
-                    )
-                    .action;
+                    ));
                 },
             );
             let ai = ctx.read_response(Id::new("compact-ai")).unwrap().rect;
@@ -1630,7 +1822,10 @@ mod tests {
             assert!(weather.right() <= clock.left() && clock.right() <= ai.left());
             let long = output.shapes.iter().find(|item| matches!(&item.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with("DeepSeek"))).unwrap();
             assert!(!long.clip_rect.intersect(clock).is_positive());
-            action
+            let frame = frame.unwrap();
+            assert_eq!(frame.hover_rect, Some(clock));
+            assert!(!frame.hover_rect.unwrap().contains(ai.center()));
+            frame.action
         };
         render(vec![]);
         let badge = ctx
@@ -1647,16 +1842,28 @@ mod tests {
         }
         let pos = badge.center();
         assert!(render(vec![egui::Event::PointerMoved(pos)]).is_none());
-        let button = |pressed| egui::Event::PointerButton {
+        let button = |pos, pressed| egui::Event::PointerButton {
             pos,
             button: egui::PointerButton::Primary,
             pressed,
             modifiers: Default::default(),
         };
-        assert!(render(vec![button(true)]).is_none());
+        assert!(render(vec![button(pos, true)]).is_none());
         assert!(matches!(
-            render(vec![button(false)]),
+            render(vec![button(pos, false)]),
             Some(ShellAction::OpenWorkbench(Page::Notifications))
+        ));
+
+        let pos = ctx
+            .read_response(Id::new("compact-ai"))
+            .unwrap()
+            .rect
+            .center();
+        assert!(render(vec![egui::Event::PointerMoved(pos)]).is_none());
+        assert!(render(vec![button(pos, true)]).is_none());
+        assert!(matches!(
+            render(vec![button(pos, false)]),
+            Some(ShellAction::ExpandPage(Page::AiUsage))
         ));
     }
 
@@ -1719,6 +1926,7 @@ mod tests {
         let hover = render(vec![egui::Event::PointerMoved(pos)], false);
         assert_eq!(hover.rect, screen);
         assert_eq!(hover.radius, 2);
+        assert_eq!(hover.hover_rect, None);
         assert!(render(Vec::new(), false).action.is_none());
 
         let button = |pressed| egui::Event::PointerButton {
@@ -1738,8 +1946,9 @@ mod tests {
     }
 
     #[test]
-    fn bottom_dock_switches_pages_over_a_long_scrollable_note() {
+    fn edits_a_long_note_and_switches_pages_from_the_bottom_dock() {
         let ctx = egui::Context::default();
+        ctx.enable_accesskit();
         let directory = tempfile::tempdir().unwrap();
         let mut store = Store::open(directory.path().into()).unwrap();
         store
@@ -1757,7 +1966,7 @@ mod tests {
         #[cfg(windows)]
         let mut sources = FeatureSources::new(ctx.clone());
         let mut render = |events| {
-            let _ = ctx.run_ui(
+            ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(screen),
                     events,
@@ -1788,8 +1997,39 @@ mod tests {
                         &mut sources,
                     );
                 },
-            );
+            )
         };
+        let output = render(vec![]);
+        let editor = output
+            .platform_output
+            .accesskit_update
+            .unwrap()
+            .nodes
+            .into_iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some("编辑便笺"))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .expect("scratchpad editor");
+        let edit = pos2(editor.x0 as f32 + 16.0, editor.y0 as f32 + 12.0);
+        render(vec![egui::Event::PointerMoved(edit)]);
+        for pressed in [true, false] {
+            render(vec![egui::Event::PointerButton {
+                pos: edit,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            }]);
+        }
+        render(vec![egui::Event::Text("刘海内编辑".into())]);
+        render(vec![egui::Event::Key {
+            key: egui::Key::S,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        }]);
         let pos = pos2(screen.center().x + 20.0, screen.bottom() - 17.0);
         render(vec![egui::Event::PointerMoved(pos)]);
         for pressed in [true, false] {
@@ -1801,6 +2041,9 @@ mod tests {
             }]);
         }
         assert_eq!(state.active, Some(Page::Calendar));
+        drop(store);
+        let reopened = Store::open(directory.path().into()).unwrap();
+        assert!(reopened.state().notes.contains("刘海内编辑"));
     }
 
     #[test]
@@ -1855,6 +2098,7 @@ mod tests {
             Page::Notes,
             Page::Calculator,
             Page::AiUsage,
+            Page::Focus,
         ];
         let (output, _) = render(&mut state, vec![], pages, 680.0);
         assert_eq!(state.active, Some(Page::Calendar));
@@ -1939,7 +2183,122 @@ mod tests {
         assert_eq!(state.active, Some(Page::Calculator));
         assert!(!state.library_open);
         let (output, _) = render(&mut state, vec![], pages, 390.0);
-        bounds(output, "计算");
+        bounds(output, "=");
+
+        state.active = Some(Page::Focus);
+        for (minutes, kind, label) in focus::PRESETS {
+            let (output, _) = render(&mut state, vec![], pages, 390.0);
+            let target = bounds(output, label);
+            render(&mut state, click(target, true), pages, 390.0);
+            let (_, action) = render(&mut state, click(target, false), pages, 390.0);
+            assert!(matches!(
+                action,
+                Some(ShellAction::SelectFocusPreset(selected, mode))
+                    if selected == minutes && mode == kind
+            ));
+        }
+    }
+
+    #[test]
+    fn calendar_and_resident_clock_overlap_during_the_morph() {
+        let ctx = egui::Context::default();
+        super::super::configure_style(&ctx);
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(directory.path().into()).unwrap();
+        let mut state = CapsuleState::default();
+        let mut workbench = Workbench::default();
+        #[cfg(windows)]
+        let mut sources = FeatureSources::new(ctx.clone());
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(576.0, 364.0));
+        let mut render = |time, expanded, reduce_motion| {
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    draw(
+                        ui,
+                        &mut store,
+                        &mut state,
+                        CapsuleOptions {
+                            dock: DockEdge::Top,
+                            expanded,
+                            pinned: false,
+                            avoiding: false,
+                            hidden: false,
+                            reduce_motion,
+                            collapsed_size: vec2(120.0, 32.0),
+                            collapsed_center: Some(pos2(288.0, 16.0)),
+                            scale: 1.0,
+                            lyrics: None,
+                            clock_24h: true,
+                            minimal: false,
+                            pages: &[Page::Calendar],
+                        },
+                        &mut workbench,
+                        #[cfg(windows)]
+                        &mut sources,
+                    );
+                },
+            );
+            let is_visible = |matches_text: fn(&str) -> bool| {
+                output.shapes.iter().any(|item| {
+                    let egui::Shape::Text(text) = &item.shape else {
+                        return false;
+                    };
+                    matches_text(&text.galley.job.text)
+                        && item
+                            .clip_rect
+                            .intersect(text.visual_bounding_rect())
+                            .is_positive()
+                })
+            };
+            (
+                is_visible(|text| text.len() == 5 && text.as_bytes()[2] == b':'),
+                is_visible(|text| text == "日历"),
+            )
+        };
+
+        assert_eq!(render(0.0, false, false), (true, false));
+        assert_eq!(render(0.016, true, false), (true, false));
+        assert_eq!(render(0.054, true, false), (true, true));
+        assert!(
+            !ctx.read_response(Id::new("capsule-compact"))
+                .unwrap()
+                .enabled()
+        );
+        assert_eq!(render(0.4, true, false), (false, true));
+        assert_eq!(render(0.5, false, false), (false, true));
+        assert_eq!(render(0.57, false, false), (true, true));
+        assert_eq!(render(0.7, false, true), (true, false));
+    }
+
+    #[test]
+    fn reversing_halfway_keeps_the_silhouette_continuous() {
+        let mut motion = motion::Transition::default();
+        let step = 1.0 / 60.0;
+        assert_eq!(motion.update(0.0, false, false), 0.0);
+        assert_eq!(motion.update(step, true, false), 0.0);
+        let mut last = 0.0;
+        for frame in 2..=5 {
+            let progress = motion.update(f64::from(frame) * step, true, false);
+            assert!(progress > last);
+            last = progress;
+        }
+        assert_eq!(motion.update(5.0 * step, false, false), last);
+        let next = motion.update(5.1 * step, false, false);
+        assert!(
+            next > last && next - last < 0.03,
+            "reversal preserves velocity"
+        );
+        let reverse = motion.update(9.0 * step, false, false);
+        assert!(reverse < last);
+        assert_eq!(motion.update(1.0, false, false), 0.0);
+        assert!(motion.settled());
+        assert_eq!(motion.update(1.0, true, true), 1.0);
+        assert_eq!(motion.update(1.0, false, true), 0.0);
     }
 
     #[test]

@@ -64,7 +64,7 @@ impl Desktop {
             return;
         }
 
-        const DIAMETER: f32 = 56.0;
+        const DIAMETER: f32 = 36.0;
         let placement = (!self.desktop_todo.bubble_initialized)
             .then(|| {
                 self.shell.as_ref()?.desktop_todo_bubble_position(

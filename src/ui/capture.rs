@@ -49,38 +49,47 @@ impl Capture {
         }
         let modern =
             supports_region_recording(*self.build.get_or_insert_with(native::windows_build));
-        super::card(ui, |ui| {
-            super::subhead(ui, "截屏");
-            ui.label("选择区域、窗口或全屏。截取后可从系统通知打开、标注并保存。");
-            if ui.button("开始截屏").clicked() {
+        let capsule = super::in_capsule(ui);
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .button("截屏")
+                .on_hover_text("选择区域、窗口或全屏。通过系统通知打开截图。")
+                .clicked()
+            {
                 self.error = crate::windows::SystemTool::ScreenCapture.open().err();
             }
-        });
-        let capsule = ui.ctx().viewport_id() == eframe::egui::ViewportId::ROOT;
-        super::card(ui, |ui| {
-            super::subhead(ui, "录屏");
-            if modern {
-                ui.label("选择要录制的屏幕区域，点击「开始」。结束后可在截图工具中保存视频。");
-                if ui.button("选择录制区域").clicked() {
-                    self.error = native::region_recorder().err();
-                }
-                ui.weak("区域录制需要支持视频的 Windows 11 截图工具。也可以使用下方的应用录制。");
+            if modern
+                && ui
+                    .button("区域录屏")
+                    .on_hover_text("选择录制区域后，点击截图工具中的开始按钮。")
+                    .clicked()
+            {
+                self.error = native::region_recorder().err();
             }
-            ui.label("录制应用窗口时，请在 3 秒内切换到目标应用，然后在 Game Bar 的「捕获」面板开始录制。");
             if ui
                 .add_enabled(
                     self.pending.is_none(),
-                    eframe::egui::Button::new("打开应用录制面板"),
+                    eframe::egui::Button::new("应用录屏"),
+                )
+                .on_hover_text(
+                    "3 秒内切换到目标应用，再通过 Game Bar 开始录制。Win + Alt + R 停止。",
                 )
                 .clicked()
             {
                 self.game_bar(ui, capsule);
             }
-            ui.weak("Win + Alt + R 可停止录制。Game Bar 将 MP4 保存到捕获文件夹。");
-            if ui.button("打开捕获文件夹").clicked() {
+            if ui.button("打开录制文件夹").clicked() {
                 self.error = native::open_recordings().err();
             }
         });
+        if self.pending.is_some() {
+            ui.weak("请切换到要录制的应用");
+        }
+        if !capsule {
+            ui.collapsing("录屏说明", |ui| {
+                ui.label("区域录屏由 Windows 11 截图工具提供。应用录屏由 Game Bar 提供，可用 Win + Alt + R 停止录制。");
+            });
+        }
         if let Some(error) = &self.error {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }

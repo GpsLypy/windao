@@ -8,7 +8,7 @@ use eframe::egui::{self, Align, Color32, Layout, Pos2, RichText, Shape, Stroke, 
 use crate::system_metrics::Sampler;
 use crate::system_metrics::{Memory, Sample};
 
-use super::{accent, card, subhead, title};
+use super::{accent, card, in_capsule, subhead, title};
 
 #[cfg(windows)]
 const SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
@@ -56,8 +56,7 @@ impl Performance {
             .request_repaint_after(SAMPLE_INTERVAL.saturating_sub(now.duration_since(sampled_at)));
 
         self.render(ui, Utc::now());
-        card(ui, |ui| {
-            subhead(ui, "设备状态");
+        let options = |ui: &mut Ui, store: &mut crate::workspace::Store| {
             let mut enabled = store.state().settings.show_system_status;
             if ui.checkbox(&mut enabled, "显示电源与输入状态").changed()
                 && let Err(error) = store.update(|state| {
@@ -89,34 +88,29 @@ impl Performance {
             {
                 ui.colored_label(ui.visuals().error_fg_color, error);
             }
-            if store.state().settings.show_system_status {
-                let status = crate::windows::system_status::DeviceStatus::read();
-                let power = status.battery.map_or_else(
-                    || status.power.clone(),
-                    |n| format!("{} · {n}%", status.power),
-                );
-                ui.label(format!("电源　{power}"));
-                ui.label(format!(
-                    "大写锁定　{}",
-                    if status.caps {
-                        "已开启"
-                    } else {
-                        "已关闭"
-                    }
-                ));
-                ui.label(format!(
-                    "前台输入语言　{}",
-                    status.language.as_deref().unwrap_or("未知")
-                ));
-            }
-        });
+        };
+        if in_capsule(ui) {
+            ui.collapsing("设备状态与设置", |ui| {
+                options(ui, store);
+                device_status(ui, store);
+            });
+        } else {
+            card(ui, |ui| {
+                subhead(ui, "设备状态");
+                options(ui, store);
+                device_status(ui, store);
+            });
+        }
     }
 
     fn render(&self, ui: &mut Ui, now: DateTime<Utc>) {
         let &(sampled_at, sample) = self.history.back().expect("initialized performance sample");
+        let compact = in_capsule(ui);
         title(ui, "系统性能");
-        ui.weak("最近 60 秒，每秒更新");
-        ui.add_space(10.0);
+        if !compact {
+            ui.weak("最近 60 秒，每秒更新");
+            ui.add_space(10.0);
+        }
 
         let dark = ui.visuals().dark_mode;
         let cpu_color = accent(dark);
@@ -141,7 +135,6 @@ impl Performance {
                     100.0,
                     &[(cpu_color, |sample| sample.cpu_percent)],
                 );
-                ui.weak("范围 0–100%");
             });
         };
         let memory = |ui: &mut Ui| {
@@ -164,7 +157,7 @@ impl Performance {
                 }
             });
         };
-        if ui.available_width() >= 480.0 {
+        if ui.available_width() >= if compact { 265.0 } else { 480.0 } {
             ui.columns(2, |columns| {
                 cpu(&mut columns[0]);
                 memory(&mut columns[1]);
@@ -173,7 +166,9 @@ impl Performance {
             cpu(ui);
             memory(ui);
         }
-        ui.add_space(8.0);
+        if !compact {
+            ui.add_space(8.0);
+        }
 
         card(ui, |ui| {
             subhead(ui, "网络速率");
@@ -206,16 +201,28 @@ impl Performance {
                     }),
                 ],
             );
-            ui.weak(format!("图表上限 {}", rate(f64::from(peak))));
+            if !compact {
+                ui.weak(format!("图表上限 {}", rate(f64::from(peak))));
+            }
         });
-        ui.add_space(16.0);
-        world_clock(ui, now);
+        if compact {
+            ui.collapsing("世界时钟", |ui| clock_rows(ui, now));
+        } else {
+            ui.add_space(16.0);
+            clock_rows(ui, now);
+        }
     }
 
     fn draw_chart(&self, ui: &mut Ui, now: Instant, max: f32, series: &[ChartLine]) {
-        let (response, painter) =
-            ui.allocate_painter(egui::vec2(ui.available_width(), 54.0), egui::Sense::hover());
+        let compact = in_capsule(ui);
+        let (response, painter) = ui.allocate_painter(
+            egui::vec2(ui.available_width(), if compact { 30.0 } else { 54.0 }),
+            egui::Sense::hover(),
+        );
         let rect = response.rect.shrink(1.0);
+        if compact {
+            response.on_hover_text("最近 60 秒，每秒更新");
+        }
         let grid_stroke = Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color);
         for fraction in [0.0, 0.5, 1.0] {
             let y = egui::lerp(rect.y_range(), fraction);
@@ -236,6 +243,29 @@ impl Performance {
             }
             paint_trace(&painter, &mut points, color);
         }
+    }
+}
+
+#[cfg(windows)]
+fn device_status(ui: &mut Ui, store: &crate::workspace::Store) {
+    if store.state().settings.show_system_status {
+        let status = crate::windows::system_status::DeviceStatus::read();
+        let power = status.battery.map_or_else(
+            || status.power.clone(),
+            |n| format!("{} · {n}%", status.power),
+        );
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!("电源 {power}"));
+            ui.label(if status.caps {
+                "大写锁定已开启"
+            } else {
+                "大写锁定已关闭"
+            });
+            ui.label(format!(
+                "输入语言 {}",
+                status.language.as_deref().unwrap_or("未知")
+            ));
+        });
     }
 }
 
@@ -284,10 +314,12 @@ fn rate(bytes: f64) -> String {
     }
 }
 
-fn world_clock(ui: &mut Ui, now: DateTime<Utc>) {
+fn clock_rows(ui: &mut Ui, now: DateTime<Utc>) {
     let local = now.with_timezone(&Local);
-    subhead(ui, "世界时钟");
-    ui.add_space(6.0);
+    if !in_capsule(ui) {
+        subhead(ui, "世界时钟");
+        ui.add_space(6.0);
+    }
     card(ui, |ui| {
         clock_row(
             ui,

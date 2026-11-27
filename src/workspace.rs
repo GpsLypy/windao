@@ -31,7 +31,7 @@ const VERSION: u32 = 1;
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_RECORDS: usize = 2_000;
 const MAX_FOCUS_SESSIONS: usize = 1_000;
-const MAX_NOTES: usize = 100_000;
+pub(crate) const MAX_NOTES: usize = 100_000;
 const MAX_NOTIFICATIONS: usize = 100;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]

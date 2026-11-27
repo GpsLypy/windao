@@ -59,6 +59,7 @@ impl Default for Translation {
 impl Translation {
     pub(super) fn show(&mut self, ui: &mut Ui) {
         title(ui, "本机翻译");
+        let compact = crate::ui::in_capsule(ui);
         if let Some(result) = self.pending.as_ref().and_then(Job::poll) {
             self.pending = None;
             match result {
@@ -93,14 +94,16 @@ impl Translation {
                         self.error.clear();
                     }
                 });
-                ui.add_space(8.0);
-                subhead(ui, "原文");
+                if !compact {
+                    ui.add_space(8.0);
+                    subhead(ui, "原文");
+                }
                 if ui
                     .add(
                         TextEdit::multiline(&mut self.input)
                             .hint_text("输入或粘贴需要翻译的文字")
                             .char_limit(2000)
-                            .desired_rows(4)
+                            .desired_rows(if compact { 2 } else { 4 })
                             .desired_width(f32::INFINITY),
                     )
                     .changed()
@@ -134,30 +137,34 @@ impl Translation {
                     self.output.clear();
                     self.error.clear();
                 }
-                ui.weak(format!("{} / 2000 字", self.input.chars().count()));
+                if !compact || self.input.chars().count() >= 1800 {
+                    ui.weak(format!("{} / 2000 字", self.input.chars().count()));
+                }
                 if self.source == self.target {
                     ui.weak("请选择不同的语言");
                 }
             });
         });
-        card(ui, |ui| {
-            subhead(ui, "译文");
-            if !idle {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.weak("正在本机翻译…");
-                });
-            } else if !self.error.is_empty() {
-                ui.colored_label(ui.visuals().error_fg_color, &self.error);
-            } else if self.output.is_empty() {
-                ui.weak("译文将显示在这里");
-            } else {
-                ui.label(&self.output);
-                if ui.button("复制译文").clicked() {
-                    ui.ctx().copy_text(self.output.clone());
+        if !compact || !idle || !self.error.is_empty() || !self.output.is_empty() {
+            card(ui, |ui| {
+                subhead(ui, "译文");
+                if !idle {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.weak("正在本机翻译…");
+                    });
+                } else if !self.error.is_empty() {
+                    ui.colored_label(ui.visuals().error_fg_color, &self.error);
+                } else if self.output.is_empty() {
+                    ui.weak("译文将显示在这里");
+                } else {
+                    ui.label(&self.output);
+                    if ui.button("复制译文").clicked() {
+                        ui.ctx().copy_text(self.output.clone());
+                    }
                 }
-            }
-        });
+            });
+        }
         ui.collapsing("本机模型设置", |ui| {
             ui.label("首次使用请安装并启动 Ollama，然后下载本机翻译模型。下载完成后即可离线翻译。");
             #[cfg(windows)]

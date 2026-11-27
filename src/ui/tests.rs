@@ -313,7 +313,7 @@ fn compact_calendar_sixth_week_accepts_a_day_click() {
     let mut render = |events| {
         let mut input = screen([252.0, 224.0]);
         input.events = events;
-        ctx.run_ui(input, |ui| month.month(ui, &[], first, Some(1.0)))
+        ctx.run_ui(input, |ui| month.month(ui, &[], first, Some((1.0, 148.0))))
     };
     render(vec![]);
     let pos = visible_text(&render(vec![]), "31");

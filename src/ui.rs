@@ -230,6 +230,8 @@ impl From<CapsulePage> for Page {
 #[derive(Debug)]
 pub enum ShellAction {
     Expand,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    ExpandPage(Page),
     Collapse,
     #[cfg_attr(not(windows), allow(dead_code))]
     SetPinned(bool),
@@ -241,6 +243,10 @@ pub enum ShellAction {
     CompleteTask(uuid::Uuid),
     ShowDesktopTodo,
     ToggleFocus,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    SelectFocusPreset(u32, crate::workspace::FocusKind),
+    #[cfg_attr(not(windows), allow(dead_code))]
+    ResetFocus(uuid::Uuid),
 }
 
 pub struct DisplayOption {
@@ -278,6 +284,11 @@ pub struct CapsuleFrame {
     pub rect: Rect,
     pub radius: u8,
     pub shoulder: Option<f32>,
+    pub hover_rect: Option<Rect>,
+    #[cfg(windows)]
+    pub resizing: bool,
+    #[cfg(windows)]
+    pub progress: f32,
 }
 
 pub(crate) fn request_quit(ctx: &egui::Context) {
@@ -475,15 +486,31 @@ fn primary(ui: &mut Ui, label: &str) -> egui::Response {
     .inner
 }
 
+fn in_capsule(ui: &Ui) -> bool {
+    ui.stack()
+        .iter()
+        .any(|scope| scope.tags().contains("notch-panel"))
+}
+
 fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
+    let compact = in_capsule(ui);
     Frame::new()
-        .fill(ui.visuals().window_fill)
-        .stroke(Stroke::new(
-            1.0_f32,
-            ui.visuals().widgets.noninteractive.bg_stroke.color,
-        ))
+        .fill(if compact {
+            ui.visuals().faint_bg_color
+        } else {
+            ui.visuals().window_fill
+        })
+        .stroke(if compact {
+            Stroke::NONE
+        } else {
+            Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color)
+        })
         .corner_radius(8)
-        .inner_margin(Margin::same(16))
+        .inner_margin(if compact {
+            Margin::symmetric(8, 5)
+        } else {
+            Margin::same(16)
+        })
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             content(ui);
@@ -491,6 +518,9 @@ fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
 }
 
 fn title(ui: &mut Ui, text: &str) {
+    if in_capsule(ui) {
+        return;
+    }
     ui.label(RichText::new(text).size(27.0).strong());
     ui.add_space(8.0);
 }
@@ -959,6 +989,11 @@ impl Workbench {
         }
     }
 
+    #[cfg(windows)]
+    pub(crate) fn sync_focus_preset(&mut self) {
+        self.focus.clear_draft();
+    }
+
     pub(crate) fn navigate(&mut self, page: Page) {
         if self.page != page {
             #[cfg(windows)]
@@ -979,39 +1014,76 @@ impl Workbench {
 
     fn notes(&mut self, ui: &mut Ui, store: &mut Store) {
         title(ui, "便笺");
+        if let Some(result) = self.scratchpad_editor(ui, store, None) {
+            self.notice = Some(result.map(|()| "便笺已保存".into()));
+        }
+    }
+
+    fn scratchpad_editor(
+        &mut self,
+        ui: &mut Ui,
+        store: &mut Store,
+        panel_height: Option<f32>,
+    ) -> Option<Result<(), String>> {
         let draft = self
             .notes
             .get_or_insert_with(|| store.state().notes.clone());
-        let editing = ui.add(
-            TextEdit::multiline(draft)
-                .desired_width(f32::INFINITY)
-                .desired_rows(12)
-                .hint_text("记下随手想法…")
-                .char_limit(100_000),
-        );
+        let id = ui.make_persistent_id("scratchpad-editor");
         let changed = draft != &store.state().notes;
-        ui.horizontal(|ui| {
-            let shortcut = editing.has_focus()
-                && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S));
-            let save = ui
-                .add_enabled_ui(changed, |ui| primary(ui, "保存便笺"))
-                .inner
-                .clicked()
-                || (changed && shortcut);
-            if save {
-                self.notice = Some(
-                    store
-                        .update(|state| {
-                            state.notes.clone_from(draft);
-                            Ok(())
-                        })
-                        .map(|_| "便笺已保存".into()),
-                );
-            }
-            if draft != &store.state().notes {
-                ui.weak("有未保存的修改");
-            }
-        });
+        let shortcut = ui.is_enabled()
+            && ui.memory(|memory| memory.has_focus(id))
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S));
+        let mut save = false;
+        let toolbar = |ui: &mut Ui| {
+            ui.horizontal(|ui| {
+                let pressed = ui
+                    .add_enabled_ui(changed, |ui| primary(ui, "保存便笺"))
+                    .inner
+                    .on_hover_text("Ctrl+S")
+                    .clicked();
+                if changed && panel_height.is_none() {
+                    ui.weak("有未保存的修改");
+                }
+                pressed
+            })
+            .inner
+        };
+        let mut edit = |ui: &mut Ui, rows| {
+            let response = ui.add(
+                TextEdit::multiline(draft)
+                    .id(id)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(rows)
+                    .hint_text("记下随手想法…")
+                    .char_limit(crate::workspace::MAX_NOTES),
+            );
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "编辑便笺")
+            });
+        };
+        if let Some(height) = panel_height {
+            save = toolbar(ui);
+            let editor_height =
+                (height - ui.spacing().interact_size.y - ui.spacing().item_spacing.y).max(28.0);
+            let line = ui.text_style_height(&TextStyle::Body);
+            let rows = ((editor_height - 10.0) / line).floor().max(2.0) as usize;
+            ScrollArea::vertical()
+                .id_salt("capsule-scratchpad")
+                .max_height(editor_height)
+                .auto_shrink([false, false])
+                .show(ui, |ui| edit(ui, rows));
+        } else {
+            edit(ui, 12);
+        }
+        if panel_height.is_none() {
+            save = toolbar(ui);
+        }
+        (changed && (save || shortcut)).then(|| {
+            store.update(|state| {
+                state.notes.clone_from(draft);
+                Ok(())
+            })
+        })
     }
 
     #[cfg(windows)]
