@@ -1,0 +1,59 @@
+src/ui/clipboard.rs
+  s_f26486ea6624c1::t_bad3f2d853edef 9,17,260-271,273-287
+  s_f26486ea6624c1::t_6bcc7675d26906 288-291,293,297-298
+src/ui/tests.rs
+  s_f26486ea6624c1::t_b5649dfc78ece1 575,580,588,601
+  s_f26486ea6624c1::t_b2b14f6f7900cf 307-422,611-882
+src/workspace.rs
+  s_f26486ea6624c1::t_1d6e7c343c82b4 146-147,320-324,335-339,408-409,440,475-476,487-488,701,897,904-906,910-912,916-917,921-922,926-931,956-957,969,974,982
+  s_f26486ea6624c1::t_b5649dfc78ece1 477-483,907-909,913-915,918-920,923-925,958-968,970-973,975-981
+src/ui/tasks.rs
+  s_f26486ea6624c1::t_1d6e7c343c82b4 1,36-37,222,253-287,289,291,293-299,336-338,340-348,399-403,415,618-621,804-820,835,859,955,1060,1111-1124
+  s_f26486ea6624c1::t_c85209b6b38981 339
+src/ui/desktop_todo.rs
+  s_f26486ea6624c1::t_1d6e7c343c82b4 1-2,4-5,121,163
+src/ui/tasks/compact.rs
+  s_f26486ea6624c1::t_b5649dfc78ece1 1-14,16-48,52-122,124-158,160-322,325-326,336-337,339-412,417-426,428-440,442-444,446-453,455-475,477-729
+  s_f26486ea6624c1::t_630ad87105976e 15,49-51,123,159,323-324,327-335,338,413-416,427,441,445,454,476
+src/workspace/todo.rs
+  s_f26486ea6624c1::t_1d6e7c343c82b4 370
+  s_f26486ea6624c1::t_b5dfee61892a8c 565-617
+src/ui.rs
+  s_f26486ea6624c1::t_bad3f2d853edef 28
+  s_f26486ea6624c1::t_05d01d5810e9f1 1051-1063
+src/ui/clipboard_row.rs
+  s_f26486ea6624c1::t_bad3f2d853edef 1-55
+  s_f26486ea6624c1::t_72c5e2b5b221c2 56-73
+CHANGELOG.md
+  s_f26486ea6624c1::t_62416b850b4428 3-8
+Cargo.lock
+  s_f26486ea6624c1::t_a834604ca4a1a1 4322
+Cargo.toml
+  s_f26486ea6624c1::t_c9dc62cd3f58bf 3
+docs/source-guide.md
+  s_f26486ea6624c1::t_92a030a34ccac1 11
+src/ui/calculator.rs
+  s_f26486ea6624c1::t_0b30e1f28bd4c0 149,245-248
+src/ui/calendar.rs
+  s_f26486ea6624c1::t_c8e197c25b1bdd 271-287,289-358,360-379
+src/ui/capsule.rs
+  s_f26486ea6624c1::t_6585878a9704c7 902-911,1284-1286,1359
+src/ui/notes_extra.rs
+  s_f26486ea6624c1::t_636dedd7b1c73e 4,23-39,94,99,107-116,205,217-226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "af7646ef0d05e30ea5b72382b2438fa31e7c4db3",
+  "prompts": {},
+  "sessions": {
+    "s_f26486ea6624c1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a21603-ebf6-7503-9876-f6050c07cd76",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "GpsLypy <80027734+GpsLypy@users.noreply.github.com>"
+    }
+  }
+}
