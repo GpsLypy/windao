@@ -93,6 +93,9 @@ impl News {
                     }
                 }
             }
+            None if self.pending.is_none() && self.error.is_none() && super::in_capsule(ui) => {
+                ui.weak("刷新以查看最新资讯");
+            }
             None => {}
         }
     }

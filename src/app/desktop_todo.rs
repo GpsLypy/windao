@@ -65,6 +65,7 @@ impl Desktop {
         }
 
         const DIAMETER: f32 = 36.0;
+        const TITLE: &str = "桌面待办悬浮球";
         let placement = (!self.desktop_todo.bubble_initialized)
             .then(|| {
                 self.shell.as_ref()?.desktop_todo_bubble_position(
@@ -84,11 +85,10 @@ impl Desktop {
             .iter()
             .filter(|task| task.is_actionable_on(today))
             .count();
-        let appearance = self.store.state().settings.appearance;
         let (close, action) = ctx.show_viewport_immediate(
             ViewportId::from_hash_of("windao-desktop-todo-bubble"),
             ViewportBuilder::default()
-                .with_title("桌面待办悬浮球")
+                .with_title(TITLE)
                 .with_icon(self.icon.clone())
                 .with_inner_size([DIAMETER, DIAMETER])
                 .with_decorations(false)
@@ -117,12 +117,8 @@ impl Desktop {
                 if ctx.input(|input| input.viewport().close_requested()) {
                     return (true, None);
                 }
-                let action = desktop_todo::bubble(
-                    ui,
-                    pending,
-                    settings.open,
-                    desktop_todo::todo_theme(ui, appearance),
-                );
+                windows::shape_todo_bubble(TITLE);
+                let action = desktop_todo::bubble(ui, pending, settings.open);
                 if action == Some(BubbleAction::Drag) {
                     ctx.send_viewport_cmd(ViewportCommand::StartDrag);
                 }

@@ -71,7 +71,7 @@ pub enum Page {
     AiWorkbench,
     #[cfg(windows)]
     Translation,
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     Capture,
     #[cfg(windows)]
     Developer,
@@ -162,7 +162,7 @@ impl Page {
             Self::AiWorkbench => "AI 工作台",
             #[cfg(windows)]
             Self::Translation => "翻译",
-            #[cfg(windows)]
+            #[cfg(any(windows, test))]
             Self::Capture => "截屏与录屏",
             #[cfg(windows)]
             Self::Developer => "开发工具",
@@ -502,13 +502,16 @@ fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
             ui.visuals().window_fill
         })
         .stroke(if compact {
-            Stroke::NONE
+            Stroke::new(
+                1.0_f32,
+                ui.visuals().window_stroke.color.gamma_multiply(0.65),
+            )
         } else {
             Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color)
         })
-        .corner_radius(8)
+        .corner_radius(capsule::CARD_RADIUS)
         .inner_margin(if compact {
-            Margin::symmetric(8, 5)
+            Margin::symmetric(10, 7)
         } else {
             Margin::same(16)
         })
@@ -527,7 +530,11 @@ fn title(ui: &mut Ui, text: &str) {
 }
 
 fn subhead(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(15.0).strong());
+    if in_capsule(ui) {
+        ui.label(RichText::new(text).text_style(TextStyle::Body).strong());
+    } else {
+        ui.label(RichText::new(text).size(15.0).strong());
+    }
 }
 
 fn local_timestamp(timestamp: i64) -> Option<DateTime<Local>> {
@@ -583,7 +590,7 @@ pub struct Workbench {
     developer: developer_tools::DeveloperTools,
     #[cfg(windows)]
     authenticator: authenticator::Authenticator,
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     capture: capture::Capture,
 
     navigation_query: String,
@@ -793,6 +800,8 @@ impl Workbench {
             Page::Authenticator => self.authenticator.show(ui, store.directory()),
             #[cfg(windows)]
             Page::Capture => self.capture.show(ui),
+            #[cfg(all(test, not(windows)))]
+            Page::Capture => self.capture.show_capsule(ui, ui.available_height(), 1.0),
 
             Page::AiUsage => self.ai_meter.show(ui, store),
             Page::Calendar => self.calendar.show(
@@ -1034,33 +1043,53 @@ impl Workbench {
         let shortcut = ui.is_enabled()
             && ui.memory(|memory| memory.has_focus(id))
             && ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S));
-        let toolbar = |ui: &mut Ui| {
-            ui.horizontal(|ui| {
-                let pressed = ui
-                    .add_enabled_ui(changed, |ui| primary(ui, "保存便笺"))
-                    .inner
-                    .on_hover_text("Ctrl+S")
+        let save_control = |ui: &mut Ui| {
+            if panel_height.is_some() && !changed {
+                return ui
+                    .add_enabled(false, egui::Button::new("保存便笺"))
                     .clicked();
-                if changed && panel_height.is_none() {
-                    ui.weak("有未保存的修改");
-                }
-                pressed
-            })
-            .inner
+            }
+            ui.add_enabled_ui(changed, |ui| primary(ui, "保存便笺"))
+                .inner
+                .on_hover_text("Ctrl+S")
+                .clicked()
         };
-        let height = panel_height.unwrap_or_else(|| ui.available_height());
-        let top = ui.cursor().top();
-        let save = toolbar(ui);
-        let remaining = height - (ui.cursor().top() - top);
-        notes_extra::editor(
-            ui,
-            TextEdit::multiline(draft)
+        let edit = |ui: &mut Ui, height: f32, draft: &mut String| {
+            let mut field = TextEdit::multiline(draft)
                 .id(id)
                 .hint_text("记下随手想法…")
-                .char_limit(crate::workspace::MAX_NOTES),
-            "编辑便笺",
-            remaining,
-        );
+                .char_limit(crate::workspace::MAX_NOTES);
+            if panel_height.is_some() {
+                field = field.margin(Margin::symmetric(10, 8));
+            }
+            notes_extra::editor(ui, field, "编辑便笺", height);
+        };
+        let save = if let Some(height) = panel_height {
+            let footer = ui.spacing().interact_size.y + ui.spacing().item_spacing.y + 3.0;
+            edit(ui, height - footer, draft);
+            ui.horizontal(|ui| {
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    save_control,
+                )
+                .inner
+            })
+            .inner
+        } else {
+            let height = ui.available_height();
+            let top = ui.cursor().top();
+            let save = ui
+                .horizontal(|ui| {
+                    let pressed = save_control(ui);
+                    if changed {
+                        ui.weak("有未保存的修改");
+                    }
+                    pressed
+                })
+                .inner;
+            edit(ui, height - (ui.cursor().top() - top), draft);
+            save
+        };
         (changed && (save || shortcut)).then(|| {
             store.update(|state| {
                 state.notes.clone_from(draft);

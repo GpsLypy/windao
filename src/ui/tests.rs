@@ -402,6 +402,10 @@ fn resizing_workbench_notes_keeps_the_draft_and_uses_the_extra_height() {
 }
 
 fn widget_bounds(output: egui::FullOutput, label: &str) -> Rect {
+    find_widget_bounds(output, label).unwrap_or_else(|| panic!("missing widget {label}"))
+}
+
+fn find_widget_bounds(output: egui::FullOutput, label: &str) -> Option<Rect> {
     let bounds = output
         .platform_output
         .accesskit_update
@@ -412,12 +416,92 @@ fn widget_bounds(output: egui::FullOutput, label: &str) -> Rect {
             (node.label() == Some(label))
                 .then(|| node.bounds())
                 .flatten()
-        })
-        .unwrap_or_else(|| panic!("missing widget {label}"));
-    Rect::from_min_max(
+        })?;
+    Some(Rect::from_min_max(
         egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
         egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
-    )
+    ))
+}
+
+#[test]
+fn capture_capsule_switches_modes_and_fits_windows_versions_and_panel_sizes() {
+    for build in [19045, 22000] {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        configure_style(&ctx);
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().into()).unwrap();
+        let mut state = capsule::CapsuleState::default();
+        let mut workbench = Workbench::default();
+        workbench.capture.set_test_build(build);
+        #[cfg(windows)]
+        let mut sources = FeatureSources::new(ctx.clone());
+        let mut render = |size, events| {
+            let mut input = screen(size);
+            input.events = events;
+            ctx.run_ui(input, |ui| {
+                capsule::draw(
+                    ui,
+                    &mut store,
+                    &mut state,
+                    capsule::CapsuleOptions {
+                        dock: DockEdge::Top,
+                        expanded: true,
+                        pinned: false,
+                        avoiding: false,
+                        hidden: false,
+                        reduce_motion: true,
+                        collapsed_size: vec2(128.0, 32.0),
+                        collapsed_center: None,
+                        scale: 1.0,
+                        lyrics: None,
+                        clock_24h: true,
+                        minimal: false,
+                        pages: &[Page::Capture],
+                    },
+                    &mut workbench,
+                    #[cfg(windows)]
+                    &mut sources,
+                );
+            })
+        };
+        for size in [[680.0, 318.0], [320.0, 250.0]] {
+            let screenshot = widget_bounds(render(size, vec![]), "开始截屏");
+            let record = widget_bounds(render(size, vec![]), "录屏").center();
+            for pressed in [true, false] {
+                render(size, click_events(record, pressed));
+            }
+            assert!(find_widget_bounds(render(size, vec![]), "开始截屏").is_none());
+            let application = widget_bounds(render(size, vec![]), "应用录屏");
+            let folder = widget_bounds(render(size, vec![]), "录制文件夹");
+            let output = render(size, vec![]);
+            assert!(
+                output.shapes.iter().any(|clipped| {
+                    matches!(&clipped.shape, egui::Shape::Text(text)
+                    if text.galley.text() == "录制文件夹"
+                        && clipped.clip_rect.contains_rect(text.visual_bounding_rect()))
+                }),
+                "folder label clipped at {size:?}"
+            );
+            assert!((application.height() - screenshot.height()).abs() <= 1.0);
+            assert!(application.bottom() < folder.top());
+            assert!(folder.bottom() < size[1] - 36.0);
+            let region = find_widget_bounds(render(size, vec![]), "区域录屏");
+            if build >= 22000 {
+                let region = region.unwrap();
+                assert!(region.right() < application.left());
+                assert!((region.width() - application.width()).abs() <= 1.0);
+                assert_eq!(region.y_range(), application.y_range());
+            } else {
+                assert!(region.is_none());
+                assert_eq!(application.size(), screenshot.size());
+            }
+            let photo = widget_bounds(render(size, vec![]), "截屏").center();
+            for pressed in [true, false] {
+                render(size, click_events(photo, pressed));
+            }
+        }
+    }
 }
 
 #[test]

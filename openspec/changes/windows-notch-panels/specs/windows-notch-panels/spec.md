@@ -52,3 +52,41 @@ The collapsed capsule and the expanded panel SHALL share a backing window at the
 
 - **WHEN** the user explicitly closes the panel with the pointer on the compact hover target
 - **THEN** hover SHALL remain suppressed until the pointer leaves that target
+
+### Requirement: AI chat and translation use embedded web pages
+
+The Windows capsule SHALL embed the official DeepSeek chat page and offer web translation through Kingsoft, Baidu, and Alibaba. The embedded page SHALL follow the size and visibility of its capsule content area.
+
+#### Scenario: Switch away from an embedded web page
+
+- **WHEN** the user opens the launcher, switches tools, or collapses the capsule
+- **THEN** the web page SHALL hide and its session SHALL remain available when the user returns
+
+#### Scenario: The web runtime or page cannot load
+
+- **WHEN** the WebView2 Runtime is unavailable or navigation fails
+- **THEN** the capsule SHALL display a recovery action and allow the user to open the official site in their browser
+
+### Requirement: Focus and monitoring panels use aligned layouts
+
+The capsule SHALL center the timer, presets, and controls on a shared axis and align the CPU and memory headings, values, and charts.
+
+#### Scenario: A CPU sample is initially unavailable
+
+- **WHEN** the user opens the monitor before a CPU sample is available
+- **THEN** the missing value SHALL occupy the same space as a numeric value
+
+### Requirement: Expanded panels use the macOS visual hierarchy
+
+The Windows capsule SHALL give its inline tools a shared visual hierarchy for controls, content cards, headings, and secondary text. The shell SHALL reserve space for the dock independently of the contents of each tool.
+
+#### Scenario: Resize or change the order of an expanded capsule
+
+- **WHEN** the dock no longer fits every enabled tool
+- **THEN** the dock SHALL retain the calendar and current tool when both are enabled and space permits, and expose the remaining tools through More
+
+#### Scenario: Switch capture modes in a narrow capsule
+
+- **WHEN** the user switches between screenshot and recording at the minimum panel size
+- **THEN** the capsule SHALL show similarly sized actions for the selected mode while keeping the recording folder legible above the dock
+- **AND** Windows versions without region recording SHALL show the application recording action

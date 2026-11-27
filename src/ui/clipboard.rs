@@ -271,7 +271,7 @@ impl ClipboardHistory {
                             .filter(|(_, e)| e.pinned == pinned)
                         {
                             ui.push_id(&item.text, |ui| {
-                                let mut row = |ui: &mut Ui| match clipboard_row::show(
+                                let row = |ui: &mut Ui| match clipboard_row::show(
                                     ui,
                                     &item.text,
                                     item.pinned,
@@ -286,12 +286,7 @@ impl ClipboardHistory {
                                     Some(clipboard_row::Action::Remove) => remove = Some(index),
                                     None => {}
                                 };
-                                if compact {
-                                    row(ui);
-                                    ui.separator();
-                                } else {
-                                    card(ui, row);
-                                }
+                                card(ui, row);
                             });
                         }
                     }

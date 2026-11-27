@@ -1,6 +1,6 @@
 [package]
 name = "windao"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 rust-version = "1.92"
 publish = false
@@ -101,6 +101,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",
 ] }
+webview2-com = "0.39.1"
 
 [profile.release]
 opt-level = "s"

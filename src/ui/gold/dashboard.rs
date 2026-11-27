@@ -44,13 +44,20 @@ impl Dashboard {
         }
         self.poll();
         let before = self.tab;
+        let compact = crate::ui::in_capsule(ui);
         ui.horizontal_wrapped(|ui| {
             for (tab, label) in [
                 (Tab::Global, "全球市场"),
                 (Tab::China, "A 股与自选"),
                 (Tab::Gold, "现货金价"),
             ] {
-                ui.selectable_value(&mut self.tab, tab, label);
+                if compact {
+                    if crate::ui::controls::segment(ui, self.tab == tab, label).clicked() {
+                        self.tab = tab;
+                    }
+                } else {
+                    ui.selectable_value(&mut self.tab, tab, label);
+                }
             }
         });
         if before != self.tab {
@@ -113,7 +120,7 @@ impl Dashboard {
             );
         }
         let mut remove = None;
-        let narrow = super::super::in_capsule(ui) && ui.available_width() < 440.0;
+        let narrow = compact && ui.available_width() < 440.0;
         egui::Grid::new("market-quotes")
             .striped(true)
             .spacing([12., 6.])

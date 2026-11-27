@@ -1,5 +1,19 @@
 use eframe::egui::{self, Color32, Rect, Response, Stroke, StrokeKind, Ui, vec2};
 
+#[cfg(windows)]
+pub(super) fn segment(ui: &mut Ui, selected: bool, label: &str) -> Response {
+    let response = ui.add(egui::Button::selectable(selected, label).frame_when_inactive(selected));
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            selected,
+            label,
+        )
+    });
+    response
+}
+
 pub(super) fn focus_outline(ui: &Ui, response: &Response, radius: u8, ink: Color32, scale: f32) {
     if response.has_focus() {
         ui.painter().rect_stroke(

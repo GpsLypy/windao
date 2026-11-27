@@ -11,15 +11,10 @@ pub(crate) enum BubbleAction {
     Drag,
 }
 
-pub(crate) fn bubble(
-    root: &Ui,
-    pending: usize,
-    expanded: bool,
-    theme: egui::Theme,
-) -> Option<BubbleAction> {
-    use egui::{Align2, Color32, FontId, Id, Rect, Sense, Stroke, StrokeKind, vec2};
+pub(crate) fn bubble(root: &Ui, pending: usize, expanded: bool) -> Option<BubbleAction> {
+    use egui::{Align2, Color32, FontId, Id, Sense, Stroke, vec2};
 
-    let rect = root.max_rect().shrink(1.0);
+    let rect = root.max_rect();
     let center = rect.center();
     let radius = rect.width().min(rect.height()) * 0.5;
     let response = root.interact(
@@ -35,66 +30,51 @@ pub(crate) fn bubble(
             format!("桌面待办，{pending} 项待处理"),
         )
     });
-    let (fill, hover, ink, border) = match theme {
-        egui::Theme::Dark => (
-            Color32::from_rgb(32, 35, 41),
-            Color32::from_rgb(48, 54, 65),
-            Color32::from_rgb(237, 242, 248),
-            Color32::from_rgb(101, 109, 124),
-        ),
-        egui::Theme::Light => (
-            Color32::from_rgb(248, 249, 251),
-            Color32::from_rgb(226, 237, 252),
-            Color32::from_rgb(38, 49, 66),
-            Color32::from_rgb(156, 169, 187),
-        ),
+
+    let signal = super::accent(true);
+    let ink = Color32::from_rgb(234, 241, 250);
+    let fill = if response.hovered() || expanded {
+        Color32::from_rgb(43, 54, 70)
+    } else {
+        Color32::from_rgb(28, 35, 45)
     };
-    let signal = super::accent(theme == egui::Theme::Dark);
+    let rim = if expanded || response.has_focus() {
+        signal
+    } else {
+        Color32::from_rgb(94, 111, 132)
+    };
     let painter = root.painter();
-    painter.circle(
+    painter.circle_filled(center, radius, fill);
+    painter.circle_stroke(
         center,
-        radius,
-        if response.hovered() || expanded {
-            hover
-        } else {
-            fill
-        },
-        Stroke::new(
-            if response.has_focus() { 2.0_f32 } else { 1.0 },
-            if expanded || response.has_focus() {
-                signal
-            } else {
-                border
-            },
-        ),
+        radius - 1.1,
+        Stroke::new(if response.has_focus() { 1.8_f32 } else { 1.0 }, rim),
     );
-    let unit = radius / 27.0;
-    let icon = center - vec2(0.0, if pending > 0 { 6.0 } else { 0.0 }) * unit;
-    painter.rect_stroke(
-        Rect::from_center_size(icon, vec2(18.0, 18.0) * unit),
-        4,
-        Stroke::new(1.7_f32, ink),
-        StrokeKind::Inside,
-    );
-    painter.line_segment(
-        [icon + vec2(-4.0, 0.0), icon + vec2(-1.0, 3.0)],
-        Stroke::new(1.8_f32, ink),
-    );
-    painter.line_segment(
-        [icon + vec2(-1.0, 3.0), icon + vec2(4.0, -3.0)],
-        Stroke::new(1.8_f32, ink),
+
+    let scale = radius / 18.0;
+    let (offset, icon_scale) = if pending > 0 {
+        (-5.5, 0.86)
+    } else {
+        (0.0, 1.1)
+    };
+    super::navigation::draw_icon(
+        root,
+        super::Page::Tasks,
+        center + vec2(0.0, offset * scale),
+        ink,
+        icon_scale * scale,
     );
     if pending > 0 {
-        let badge = if pending > 99 {
+        let count = if pending > 99 {
             "99+".into()
         } else {
             pending.to_string()
         };
         painter.text(
-            center + vec2(0.0, 13.0) * unit,
+            center + vec2(0.0, 8.0 * scale),
             Align2::CENTER_CENTER,
-            badge,
-            FontId::proportional((12.0 * unit).max(9.0)),
+            count,
+            FontId::proportional(10.0 * scale),
             signal,
         );
     }
@@ -189,7 +169,7 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |ui| action = bubble(ui, 2, false, egui::Theme::Dark),
+                |ui| action = bubble(ui, 2, false),
             );
             action
         };

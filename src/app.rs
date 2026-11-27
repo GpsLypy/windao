@@ -37,6 +37,9 @@ pub fn run() -> Result<(), String> {
         .map(PathBuf::from)
         .ok_or("Windows 用户数据目录不可用。")?;
     let profile = app_data.join("WinDao");
+    let web_profile = std::env::var_os("LOCALAPPDATA")
+        .map(|path| PathBuf::from(path).join("WinDao"))
+        .unwrap_or_else(|| profile.clone());
     let legacy_profile = app_data.join("Notch Calendar Windows");
     let store = Store::open(profile.clone())?;
     let legacy = legacy_profile.join("workspace.json");
@@ -87,6 +90,7 @@ pub fn run() -> Result<(), String> {
                 sources.media.set_lyrics_directory(profile.join("lyrics"));
                 Ok(Box::new(Desktop {
                     store,
+                    web_profile: web_profile.clone(),
                     legacy: legacy.clone(),
                     icon: icon.clone(),
                     shell: None,
@@ -143,6 +147,7 @@ pub fn run() -> Result<(), String> {
 
 struct Desktop {
     store: Store,
+    web_profile: PathBuf,
     legacy: PathBuf,
     icon: Arc<egui::IconData>,
     shell: Option<Shell>,
@@ -198,6 +203,7 @@ impl Desktop {
         self.suppress_hover = !expanded;
         self.hover_at = None;
         if !expanded {
+            self.capsule_state.hide_webview();
             self.override_avoidance = false;
         }
     }
@@ -576,6 +582,18 @@ impl Desktop {
                 ctx.pixels_per_point(),
             );
         }
+        self.capsule_state.sync_webview(
+            shell.window_handle(),
+            &self.web_profile,
+            &ctx,
+            self.expanded
+                && !hidden
+                && !avoiding
+                && layout_ready
+                && capsule.progress == 1.0
+                && !matches!(capsule.action, Some(ShellAction::Collapse)),
+            layout.as_ref().map(|layout| layout.origin),
+        );
         let pointer = Shell::cursor_position();
         let local_pointer = pointer.zip(layout).map(|([x, y], layout)| {
             egui::pos2(

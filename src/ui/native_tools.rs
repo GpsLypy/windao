@@ -156,7 +156,25 @@ impl NativeTools {
             if let Some(Err(error)) = &self.notice {
                 ui.colored_label(ui.visuals().error_fg_color, error.to_string());
             }
-            if hovering {
+            if compact && (hovering || shelf.entries.is_empty()) {
+                card(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(8.0);
+                        let label = if hovering {
+                            "松开即可暂存"
+                        } else {
+                            "拖入文件或文件夹"
+                        };
+                        let color = if hovering {
+                            ui.visuals().hyperlink_color
+                        } else {
+                            ui.visuals().weak_text_color()
+                        };
+                        ui.colored_label(color, label);
+                        ui.add_space(8.0);
+                    });
+                });
+            } else if hovering {
                 ui.colored_label(ui.visuals().hyperlink_color, "松开即可暂存");
             } else if shelf.entries.is_empty() {
                 ui.weak("拖入文件或文件夹");

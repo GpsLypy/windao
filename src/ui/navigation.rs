@@ -22,6 +22,8 @@ impl Page {
             Self::Focus | Self::Notes | Self::Dates | Self::Calculator | Self::News => "工具",
             #[cfg(windows)]
             Self::Music | Self::Weather => "工具",
+            #[cfg(all(test, not(windows)))]
+            Self::Capture => "工具",
             Self::Settings => "偏好",
             #[cfg(windows)]
             _ => "桌面工具",
@@ -262,7 +264,7 @@ pub(super) fn draw_icon(ui: &Ui, page: Page, center: Pos2, color: Color32, scale
             line((4., -3.), (8., 7.));
             line((2., 3.), (6., 3.));
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, test))]
         Page::Capture => {
             rect(-8., -6., 16., 12.);
             ring(0., 0., 3.);

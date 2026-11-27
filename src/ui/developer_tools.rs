@@ -335,17 +335,15 @@ impl DeveloperTools {
             _ => {}
         });
         let d = &mut self.drafts[i];
-        if self.tool != Tool::Uuid
-            && ui
-                .add(
-                    egui::TextEdit::multiline(&mut d.input)
-                        .desired_rows(if compact { 2 } else { 3 })
-                        .desired_width(f32::INFINITY)
-                        .hint_text("输入或粘贴内容")
-                        .char_limit(1_048_576),
-                )
-                .changed()
-        {
+        let mut input = egui::TextEdit::multiline(&mut d.input)
+            .desired_rows(3)
+            .desired_width(f32::INFINITY)
+            .hint_text("输入或粘贴内容")
+            .char_limit(1_048_576);
+        if compact {
+            input = input.margin(egui::Margin::symmetric(10, 6));
+        }
+        if self.tool != Tool::Uuid && ui.add(input).changed() {
             d.message = None;
             d.output.clear();
             if self.tool == Tool::Qr {
@@ -354,14 +352,17 @@ impl DeveloperTools {
             }
         }
         ui.horizontal_wrapped(|ui| {
-            if ui
-                .button(if matches!(self.tool, Tool::Qr | Tool::Uuid) {
-                    "生成"
-                } else {
-                    "执行"
-                })
-                .clicked()
-            {
+            let label = if matches!(self.tool, Tool::Qr | Tool::Uuid) {
+                "生成"
+            } else {
+                "执行"
+            };
+            let run = if compact {
+                super::primary(ui, label)
+            } else {
+                ui.button(label)
+            };
+            if run.clicked() {
                 d.message = None;
                 let text = d.input.as_str();
                 let result = if text.len() > 1_048_576 {

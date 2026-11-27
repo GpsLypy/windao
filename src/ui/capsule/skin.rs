@@ -14,6 +14,9 @@ pub(super) struct Palette {
     pub selected: Color32,
 }
 
+pub(crate) const CARD_RADIUS: u8 = 8;
+const CONTROL_RADIUS: u8 = 6;
+
 fn rgb(hex: u32) -> Color32 {
     Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
@@ -22,7 +25,7 @@ impl Palette {
     pub fn for_skin(skin: CapsuleSkin, cover: Option<Color32>) -> Self {
         let [surface, card, border, caption, ink, signal, selected] = match skin {
             CapsuleSkin::Classic => [
-                0x000000, 0x1d1d20, 0x333338, 0xb6bcc1, 0xf5f5f5, 0x77a6ff, 0x2a3652,
+                0x000000, 0x1c1c1e, 0x303033, 0xa8a8b1, 0xf5f5f7, 0x91b7ff, 0x242e42,
             ],
             CapsuleSkin::Cream => [
                 0xf6eddb, 0xfff9ef, 0xd5c5a5, 0x695c4a, 0x342d24, 0x81542c, 0xead8b8,
@@ -96,6 +99,42 @@ impl Palette {
             ink: v.text_color(),
             signal: v.hyperlink_color,
             selected: v.selection.bg_fill,
+        }
+    }
+
+    pub(super) fn inset(self) -> Color32 {
+        self.surface.lerp_to_gamma(self.card, 0.72)
+    }
+
+    pub(super) fn apply_expanded(self, ui: &mut Ui, scale: f32) {
+        let radius = CornerRadius::same((f32::from(CONTROL_RADIUS) * scale).round() as u8);
+        let visuals = &mut ui.style_mut().visuals;
+        visuals.faint_bg_color = self.inset();
+        visuals.extreme_bg_color = self.inset();
+        visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, self.border);
+        for (widget, fill, rim) in [
+            (&mut visuals.widgets.inactive, self.card, Stroke::NONE),
+            (
+                &mut visuals.widgets.hovered,
+                self.card.lerp_to_gamma(self.ink, 0.10),
+                Stroke::new(1.0_f32, self.border),
+            ),
+            (
+                &mut visuals.widgets.active,
+                self.selected,
+                Stroke::new(1.0_f32, self.signal),
+            ),
+            (
+                &mut visuals.widgets.open,
+                self.inset(),
+                Stroke::new(1.0_f32, self.border),
+            ),
+        ] {
+            widget.corner_radius = radius;
+            widget.weak_bg_fill = fill;
+            widget.bg_fill = fill;
+            widget.bg_stroke = rim;
+            widget.expansion = 0.0;
         }
     }
 }

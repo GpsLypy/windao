@@ -245,24 +245,47 @@ impl Calendar {
         let events = crate::workspace::event_identity::visible(events);
         let top = ui.cursor().top();
         let compact = capsule_layout.is_some();
-        ui.horizontal_wrapped(|ui| {
-            subhead(ui, &self.date.format("%Y年%-m月").to_string());
-            if ui.button("‹").on_hover_text("上个月").clicked() {
-                self.date = self
-                    .date
-                    .checked_sub_months(Months::new(1))
-                    .unwrap_or(self.date);
+        let navigate = |ui: &mut Ui, date: &mut NaiveDate, forward| {
+            let (label, hint) = if forward {
+                ("›", "下个月")
+            } else {
+                ("‹", "上个月")
+            };
+            let response = ui.button(label);
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, hint));
+            if response.on_hover_text(hint).clicked() {
+                let next = if forward {
+                    date.checked_add_months(Months::new(1))
+                } else {
+                    date.checked_sub_months(Months::new(1))
+                };
+                *date = next.unwrap_or(*date);
             }
-            if ui.button("›").on_hover_text("下个月").clicked() {
-                self.date = self
-                    .date
-                    .checked_add_months(Months::new(1))
-                    .unwrap_or(self.date);
-            }
-            if ui.button("今天").clicked() {
-                self.date = today;
-            }
-        });
+        };
+        let title = self.date.format("%Y年%-m月").to_string();
+        if compact {
+            ui.horizontal(|ui| {
+                ui.strong(title);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let reset = ui.button("今天").clicked();
+                    navigate(ui, &mut self.date, true);
+                    navigate(ui, &mut self.date, false);
+                    if reset {
+                        self.date = today;
+                    }
+                });
+            });
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                subhead(ui, &title);
+                navigate(ui, &mut self.date, false);
+                navigate(ui, &mut self.date, true);
+                if ui.button("今天").clicked() {
+                    self.date = today;
+                }
+            });
+        }
         let first = self.date.with_day(1).unwrap_or(self.date);
         let offset = i64::from(first.weekday().num_days_from_sunday());
         let next_month = first.checked_add_months(Months::new(1)).unwrap_or(first);

@@ -172,14 +172,17 @@ impl Authenticator {
                 secure_input(ui, &mut self.confirmation, "再次输入口令（至少 10 个字符）");
             }
         }
-        if ui
-            .button(if self.password_mode {
-                "用口令解锁"
-            } else {
-                "使用 Windows Hello 解锁"
-            })
-            .clicked()
-        {
+        let label = if self.password_mode {
+            "用口令解锁"
+        } else {
+            "使用 Windows Hello 解锁"
+        };
+        let unlock = if crate::ui::in_capsule(ui) {
+            crate::ui::primary(ui, label)
+        } else {
+            ui.button(label)
+        };
+        if unlock.clicked() {
             if self.password_mode
                 && existing.is_none()
                 && (self.password.chars().count() < 10 || *self.password != *self.confirmation)

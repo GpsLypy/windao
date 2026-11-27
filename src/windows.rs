@@ -13,9 +13,10 @@ use windows_sys::Win32::Foundation::{
     GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    CreatePolygonRgn, CreateRectRgn, CreateRoundRectRgn, DISPLAY_DEVICE_ACTIVE, DISPLAY_DEVICEW,
-    DeleteObject, EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
-    MONITORINFO, MONITORINFOEXW, SetWindowRgn, WINDING,
+    COMPLEXREGION, CreateEllipticRgn, CreatePolygonRgn, CreateRectRgn, CreateRoundRectRgn,
+    DISPLAY_DEVICE_ACTIVE, DISPLAY_DEVICEW, DeleteObject, EnumDisplayDevicesW, EnumDisplayMonitors,
+    GetMonitorInfoW, GetWindowRgnBox, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW, SetWindowRgn,
+    WINDING,
 };
 use windows_sys::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint};
 use windows_sys::Win32::System::Com::{
@@ -24,7 +25,7 @@ use windows_sys::Win32::System::Com::{
 use windows_sys::Win32::System::Registry::{
     HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
 };
-use windows_sys::Win32::System::Threading::CreateMutexW;
+use windows_sys::Win32::System::Threading::{CreateMutexW, GetCurrentThreadId};
 use windows_sys::Win32::UI::Controls::Dialogs::{
     CommDlgExtendedError, GetOpenFileNameW, GetSaveFileNameW, OFN_ALLOWMULTISELECT, OFN_EXPLORER,
     OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR, OFN_NOREADONLYRETURN, OFN_OVERWRITEPROMPT,
@@ -385,6 +386,51 @@ fn shell_path(path: &Path) -> io::Result<Vec<u16>> {
     Ok(wide)
 }
 
+pub fn shape_todo_bubble(title: &str) {
+    unsafe extern "system" fn visit(hwnd: HWND, data: LPARAM) -> i32 {
+        // EnumThreadWindows invokes the callback synchronously.
+        let title = unsafe { &*(data as *const Vec<u16>) };
+        let mut candidate = [0_u16; 64];
+        let length =
+            unsafe { GetWindowTextW(hwnd, candidate.as_mut_ptr(), candidate.len() as i32) };
+        if &candidate[..length as usize] != title {
+            return 1;
+        }
+
+        let mut window = RECT::default();
+        if unsafe { GetClientRect(hwnd, &mut window) } == 0
+            || window.right <= 0
+            || window.bottom <= 0
+        {
+            return 0;
+        }
+        let mut region_bounds = RECT::default();
+        let complex = unsafe { GetWindowRgnBox(hwnd, &mut region_bounds) } == COMPLEXREGION;
+        if complex
+            && region_bounds.left == 0
+            && region_bounds.top == 0
+            && region_bounds.right == window.right
+            && region_bounds.bottom == window.bottom
+        {
+            return 0;
+        }
+        let region = unsafe { CreateEllipticRgn(0, 0, window.right, window.bottom) };
+        if !region.is_null() && unsafe { SetWindowRgn(hwnd, region, 1) } == 0 {
+            unsafe { DeleteObject(region) };
+        }
+        0
+    }
+
+    let title: Vec<u16> = title.encode_utf16().collect();
+    unsafe {
+        EnumThreadWindows(
+            GetCurrentThreadId(),
+            Some(visit),
+            &title as *const _ as LPARAM,
+        )
+    };
+}
+
 pub fn open_local_path(path: &Path) -> io::Result<()> {
     let path = shell_path(path)?;
     let result = unsafe {
@@ -637,6 +683,10 @@ struct Region {
 
 impl Shell {
     pub fn attach(frame: &eframe::Frame, ctx: &egui::Context) -> io::Result<Self> {
+        use windows_sys::Win32::Graphics::Dwm::{
+            DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DwmSetWindowAttribute,
+        };
+
         let handle = frame
             .window_handle()
             .map_err(|error| io::Error::other(error.to_string()))?;
@@ -668,6 +718,15 @@ impl Shell {
                 hwnd,
                 CAPSULE_PROPERTY,
                 std::ptr::dangling_mut::<u8>().cast(),
+            );
+            // The capsule paints its own outline. Windows 11 can otherwise add
+            // a native border when a hover-opened window first takes focus.
+            let border_color = DWMWA_COLOR_NONE;
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_BORDER_COLOR as u32,
+                (&border_color as *const u32).cast(),
+                size_of::<u32>() as u32,
             );
         }
         let shell = Self {
@@ -791,9 +850,19 @@ impl Shell {
         (unsafe { GetCursorPos(&mut pointer) } != 0).then_some([pointer.x, pointer.y])
     }
 
+    pub fn window_handle(&self) -> windows::Win32::Foundation::HWND {
+        windows::Win32::Foundation::HWND(self.hwnd)
+    }
+
     pub fn cursor_over_capsule(&self) -> bool {
         let mut pointer = POINT::default();
-        unsafe { GetCursorPos(&mut pointer) != 0 && WindowFromPoint(pointer) == self.hwnd }
+        unsafe {
+            if GetCursorPos(&mut pointer) == 0 {
+                return false;
+            }
+            let window = WindowFromPoint(pointer);
+            window == self.hwnd || IsChild(self.hwnd, window) != 0
+        }
     }
 
     pub fn dock_move_in_progress(&self) -> bool {
@@ -1555,6 +1624,11 @@ unsafe extern "system" fn window_message(
                 }
                 events.ctx.request_repaint_of(egui::ViewportId::ROOT);
             }
+        }
+        WM_NCACTIVATE if unsafe { IsIconic(hwnd) } == 0 => {
+            // Let winit and Win32 process the focus change. An lParam of -1
+            // skips the default title bar and frame repaint, also on Windows 10.
+            return unsafe { DefSubclassProc(hwnd, msg, wparam, -1) };
         }
         WM_MOUSEACTIVATE => unsafe {
             if !events.interactive.get() {

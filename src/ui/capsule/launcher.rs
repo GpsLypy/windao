@@ -145,7 +145,17 @@ fn row(ui: &mut Ui, entry: Entry, active: bool, scale: f32) -> bool {
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, text)
     });
-    controls::navigation_background(ui, &response, active, scale);
+    let radius = (8.0 * scale).round() as u8;
+    let painter = ui.painter().with_clip_rect(rect.shrink(scale));
+    if active || response.hovered() || response.is_pointer_button_down_on() {
+        let fill = if active {
+            tone.selected
+        } else {
+            tone.card.lerp_to_gamma(tone.ink, 0.08)
+        };
+        painter.rect_filled(rect, radius, fill);
+    }
+    controls::focus_outline(ui, &response, radius, tone.signal, scale);
     let center = rect.center();
     entry.icon(
         ui,
@@ -153,7 +163,7 @@ fn row(ui: &mut Ui, entry: Entry, active: bool, scale: f32) -> bool {
         if active { tone.signal } else { tone.caption },
         scale,
     );
-    ui.painter().text(
+    painter.text(
         pos2(rect.left() + 33.0 * scale, center.y),
         Align2::LEFT_CENTER,
         text,
@@ -161,8 +171,8 @@ fn row(ui: &mut Ui, entry: Entry, active: bool, scale: f32) -> bool {
         tone.ink,
     );
     if let Some((key, hint)) = entry.shortcut() {
-        if rect.width() > 131.0 * scale {
-            ui.painter().text(
+        if rect.width() >= 164.0 * scale {
+            painter.text(
                 pos2(rect.right() - 11.0 * scale, center.y),
                 Align2::RIGHT_CENTER,
                 hint,
@@ -198,14 +208,14 @@ pub(super) fn show(
         if ui
             .add_sized(
                 vec2(78.0, 28.0) * s,
-                egui::Button::new(RichText::new("退出应用").size(12.0 * s))
-                    .corner_radius((5.0 * s).round() as u8),
+                egui::Button::new(RichText::new("退出应用").size(12.0 * s)),
             )
             .clicked()
         {
             super::super::request_quit(ui.ctx());
         }
     });
+    ui.add_space(4.0 * s);
     let term = query.trim();
     let groups: Vec<_> = GROUPS
         .iter()
@@ -247,7 +257,12 @@ pub(super) fn show(
                     for (cell, (title, entries)) in cells.iter_mut().zip(band) {
                         cell.horizontal(|ui| {
                             ui.add_space(5.0 * s);
-                            ui.label(RichText::new(*title).size(11.0 * s).color(tone.caption));
+                            ui.label(
+                                RichText::new(*title)
+                                    .size(12.0 * s)
+                                    .strong()
+                                    .color(tone.caption),
+                            );
                         });
                         for &page in entries {
                             if row(cell, page, Some(page) == active.map(Open), s) {

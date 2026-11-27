@@ -16,6 +16,12 @@ fn brand(exe: &str) -> Option<&'static str> {
     }
 }
 
+#[cfg(windows)]
+pub(super) fn is_netease_source(source: &str) -> bool {
+    let source = source.to_ascii_lowercase();
+    source.contains("cloudmusic") || source.contains("netease") || source.contains("网易云音乐")
+}
+
 fn parse(exe: &str, caption: &str, known_title: Option<&str>) -> Option<Caption> {
     let brand = brand(exe)?;
     let raw = caption.trim();
@@ -31,7 +37,7 @@ fn parse(exe: &str, caption: &str, known_title: Option<&str>) -> Option<Caption>
         Some(_) => return None,
         None if exe == "kugou.exe" && raw != body => (b, a),
         // Other versions vary in field order; keep the visible text verbatim.
-        None if raw != body => (body, ""),
+        None if raw != body || exe == "cloudmusic.exe" => (body, ""),
         None => return None,
     };
     Some(Caption {
@@ -72,7 +78,10 @@ pub(super) fn read(source: Option<(&str, &str)>) -> Option<Caption> {
         if let Some((source, _)) = search.source {
             let app = source.to_ascii_lowercase();
             let name = exe.trim_end_matches(".exe");
-            if !app.contains(name) && !app.contains(brand(exe).unwrap_or("")) {
+            if !app.contains(name)
+                && !app.contains(brand(exe).unwrap_or(""))
+                && !(exe == "cloudmusic.exe" && is_netease_source(&app))
+            {
                 return 1;
             }
         }
@@ -129,6 +138,11 @@ mod tests {
             assert!(parse(exe, "甲 - 乙", Some("丙")).is_none());
             assert!(parse(exe, brand, None).is_none());
         }
+        assert_eq!(
+            parse("cloudmusic.exe", "甲 - 乙", None).unwrap().title,
+            "甲 - 乙"
+        );
+        assert!(parse("qqmusic.exe", "甲 - 乙", None).is_none());
         assert!(parse("browser.exe", "甲 - 乙 - 酷狗音乐", None).is_none());
     }
 }

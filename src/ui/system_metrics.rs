@@ -125,39 +125,48 @@ impl Performance {
             Color32::from_rgb(154, 77, 23)
         };
 
-        let cpu = |ui: &mut Ui| {
+        let counter = |ui: &mut Ui, label: &str, detail: Option<String>, line: ChartLine| {
             card(ui, |ui| {
-                ui.label("CPU 使用率");
-                value(ui, sample.cpu_percent.map(percent));
-                self.draw_chart(
-                    ui,
-                    sampled_at,
-                    100.0,
-                    &[(cpu_color, |sample| sample.cpu_percent)],
-                );
+                let heading = ui.add(egui::Label::new(label).truncate());
+                if let Some(detail) = detail {
+                    heading.on_hover_text(detail);
+                }
+                let usage = line.1(sample);
+                let text = usage.map_or_else(|| "—".into(), percent);
+                let reading = RichText::new(text).monospace().size(19.0).strong();
+                if usage.is_some() {
+                    ui.label(reading);
+                } else {
+                    ui.label(reading.weak()).on_hover_text("暂无数据");
+                }
+                self.draw_chart(ui, sampled_at, 100.0, &[line]);
             });
+        };
+        let cpu = |ui: &mut Ui| {
+            counter(
+                ui,
+                "CPU 使用率",
+                None,
+                (cpu_color, |sample| sample.cpu_percent),
+            );
         };
         let memory = |ui: &mut Ui| {
-            card(ui, |ui| {
-                ui.label("内存使用率");
-                value(ui, sample.memory.map(|memory| percent(memory.percent())));
-                self.draw_chart(
-                    ui,
-                    sampled_at,
-                    100.0,
-                    &[(memory_color, |sample| sample.memory.map(Memory::percent))],
-                );
-                if let Some(memory) = sample.memory {
-                    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-                    ui.weak(format!(
-                        "已用 {:.1} / {:.1} GiB",
-                        memory.used as f64 / GIB,
-                        memory.total as f64 / GIB
-                    ));
-                }
+            let capacity = sample.memory.map(|memory| {
+                const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+                format!(
+                    "已用 {:.1} / {:.1} GiB",
+                    memory.used as f64 / GIB,
+                    memory.total as f64 / GIB
+                )
             });
+            counter(
+                ui,
+                "内存使用率",
+                capacity,
+                (memory_color, |sample| sample.memory.map(Memory::percent)),
+            );
         };
-        if ui.available_width() >= if compact { 265.0 } else { 480.0 } {
+        if ui.available_width() >= if compact { 220.0 } else { 480.0 } {
             ui.columns(2, |columns| {
                 cpu(&mut columns[0]);
                 memory(&mut columns[1]);
@@ -398,6 +407,20 @@ mod tests {
             };
             let _ = ctx.run_ui(input.clone(), render);
             let output = ctx.run_ui(input, render);
+            if width >= 480.0 {
+                let baseline = |label| {
+                    output
+                        .shapes
+                        .iter()
+                        .find_map(|clipped| match &clipped.shape {
+                            Shape::Text(text) if text.galley.job.text == label => Some(text.pos.y),
+                            _ => None,
+                        })
+                        .unwrap()
+                };
+                assert_eq!(baseline("CPU 使用率"), baseline("内存使用率"));
+                assert_eq!(baseline("38.5%"), baseline("75.0%"));
+            }
             let text = output
                 .shapes
                 .iter()

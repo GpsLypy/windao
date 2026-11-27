@@ -21,9 +21,12 @@ mod companion;
 mod launcher;
 mod motion;
 mod resident;
+#[cfg(windows)]
+mod web;
 
 pub(crate) mod silhouette;
 mod skin;
+pub(super) use skin::CARD_RADIUS;
 use skin::Palette;
 
 pub(crate) struct CapsuleOptions<'a> {
@@ -50,6 +53,8 @@ pub(crate) struct CapsuleState {
     focus_reset_confirmation: Option<uuid::Uuid>,
     #[cfg(windows)]
     player: super::music::Player,
+    #[cfg(windows)]
+    web: web::Panels,
     active: Option<Page>,
     library_open: bool,
     library_query: String,
@@ -64,6 +69,23 @@ pub(crate) struct CapsuleState {
 }
 
 impl CapsuleState {
+    #[cfg(windows)]
+    pub(crate) fn sync_webview(
+        &mut self,
+        hwnd: windows::Win32::Foundation::HWND,
+        directory: &std::path::Path,
+        ctx: &egui::Context,
+        show: bool,
+        origin: Option<[i32; 2]>,
+    ) {
+        self.web.sync(hwnd, directory, ctx, show, origin);
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn hide_webview(&mut self) {
+        self.web.hide();
+    }
+
     #[cfg(windows)]
     pub(crate) fn shows_authenticator(&self) -> bool {
         self.active == Some(Page::Authenticator) && !self.library_open
@@ -163,6 +185,8 @@ pub(crate) fn draw(
     workbench: &mut Workbench,
     #[cfg(windows)] sources: &mut FeatureSources,
 ) -> CapsuleFrame {
+    #[cfg(windows)]
+    state.web.begin_frame();
     let expanded = options.expanded && !options.avoiding && !options.hidden;
     let instant = options.reduce_motion || options.avoiding || options.hidden;
     let progress = state
@@ -694,30 +718,13 @@ fn compact_content(
             },
         );
     } else if options.dock.is_horizontal() && !running && options.lyrics.is_none() {
-        let inset = 10.0 * s;
-        let y = rect.center().y;
-        let font = FontId::monospace(13.0 * s);
-        let measured = painter
-            .layout_no_wrap(time.clone(), font.clone(), tone.ink)
-            .size()
-            .x;
-        let room = rect.width() - 2. * inset - measured - 5. * s;
-        if room >= 20. * s {
-            truncated_text(
-                ui,
-                &now.format("%-m/%-d").to_string(),
-                pos2(rect.left() + inset, y),
-                room,
-                12. * s,
-                tone.caption,
-            );
-        }
-        painter.text(
-            pos2(rect.right() - inset, y),
-            Align2::RIGHT_CENTER,
+        draw_compact_date_time(
+            &painter,
+            rect,
+            now.format("%-m/%-d").to_string(),
             time,
-            FontId::monospace(13.0 * s),
-            tone.ink,
+            s,
+            &tone,
         );
     } else if options.dock.is_horizontal() {
         let x = rect.left() + 17.0 * s;
@@ -826,6 +833,35 @@ fn compact_content(
     response.clicked().then_some(ShellAction::Expand)
 }
 
+fn draw_compact_date_time(
+    painter: &egui::Painter,
+    rect: Rect,
+    date: String,
+    time: String,
+    scale: f32,
+    tone: &Palette,
+) {
+    let font = FontId::monospace(13.0 * scale);
+    let inset = 10.0 * scale;
+    let digit = painter.layout_no_wrap("0".to_owned(), font.clone(), tone.ink);
+    let y = (rect.center().y - digit.mesh_bounds.center().y)
+        .round_to_pixels(painter.pixels_per_point());
+    let time = painter.layout_no_wrap(time, font.clone(), tone.ink);
+    let time_left = rect.right() - inset - time.size().x;
+    let date_left = rect.left() + inset;
+    let date_width = time_left - date_left - 5.0 * scale;
+
+    if date_width >= 20.0 * scale {
+        let mut job = egui::text::LayoutJob::simple_singleline(date, font, tone.caption);
+        job.wrap.max_width = date_width;
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        let date = painter.fonts_mut(|fonts| fonts.layout_job(job));
+        painter.galley(pos2(date_left, y), date, tone.caption);
+    }
+    painter.galley(pos2(time_left, y), time, tone.ink);
+}
+
 fn truncated_text(
     ui: &Ui,
     message: &str,
@@ -884,9 +920,20 @@ fn scale_style(ui: &mut Ui, scale: f32) {
     let style = ui.style_mut();
     style.spacing.item_spacing = vec2(6.0, 6.0) * scale;
     style.spacing.interact_size = vec2(32.0, 26.0) * scale;
-    style.spacing.button_padding = vec2(8.0, 3.0) * scale;
+    style.spacing.button_padding = vec2(10.0, 4.0) * scale;
     for font in style.text_styles.values_mut() {
         font.size *= scale;
+    }
+    for (role, size) in [
+        (egui::TextStyle::Body, 13.0),
+        (egui::TextStyle::Button, 13.0),
+        (egui::TextStyle::Small, 11.0),
+    ] {
+        style
+            .text_styles
+            .get_mut(&role)
+            .expect("built-in text style")
+            .size = size * scale;
     }
 }
 
@@ -909,6 +956,7 @@ fn expanded_content(
     let room = ui.max_rect().size() / reference;
     let s = room.x.min(room.y).clamp(options.scale, 1.4 * options.scale);
     scale_style(ui, s);
+    tone.apply_expanded(ui, s);
     let now = Local::now();
     let date = now.date_naive();
     let mut action = None;
@@ -930,13 +978,23 @@ fn expanded_content(
     let overflow = pages.len() > max_slots;
     let visible_count = if overflow { max_slots - 1 } else { pages.len() };
     let mut visible = pages[..visible_count].to_vec();
-    if let Some(active) = state.active
-        && !visible.contains(&active)
-        && let Some(last) = visible.last_mut()
-        && visible_count > 1
+    for pinned in [
+        Some(Page::Calendar).filter(|page| pages.contains(page)),
+        state.active,
+    ]
+    .into_iter()
+    .flatten()
     {
-        *last = active;
+        if !visible.contains(&pinned)
+            && let Some(slot) = visible
+                .iter_mut()
+                .rev()
+                .find(|page| **page != Page::Calendar)
+        {
+            *slot = pinned;
+        }
     }
+    visible.sort_by_key(|page| pages.iter().position(|candidate| candidate == page));
     let slots = visible.len() + usize::from(overflow);
     let slot = (ui.max_rect().width() - 6.0 * s).max(1.0) / slots.max(1) as f32;
     let slot = slot.min(40.0 * s);
@@ -981,7 +1039,11 @@ fn expanded_content(
                 ui.painter().rect_filled(
                     chip,
                     (14.0 * s) as u8,
-                    if selected { tone.selected } else { tone.border },
+                    if selected {
+                        tone.selected
+                    } else {
+                        tone.card.lerp_to_gamma(tone.ink, 0.10)
+                    },
                 );
                 if response.has_focus() {
                     ui.painter().rect_stroke(
@@ -1001,9 +1063,15 @@ fn expanded_content(
                     s,
                 );
             } else {
-                for dx in [-5.0, 0.0, 5.0] {
-                    ui.painter()
-                        .circle_filled(center + vec2(dx * s, 0.0), 1.2 * s, tone.caption);
+                for x in [-3.5, 3.5] {
+                    for y in [-3.5, 3.5] {
+                        ui.painter().rect_stroke(
+                            Rect::from_center_size(center + vec2(x, y) * s, Vec2::splat(4.0 * s)),
+                            1,
+                            Stroke::new(s, tone.caption),
+                            StrokeKind::Inside,
+                        );
+                    }
                 }
             }
             if response.on_hover_text(label).clicked() {
@@ -1021,7 +1089,7 @@ fn expanded_content(
         if let Some(active) = state.active {
             let title_width = (ui.available_width() - 132.0 * s).max(52.0 * s);
             Frame::new()
-                .fill(tone.card)
+                .fill(tone.card.lerp_to_gamma(tone.ink, 0.06))
                 .corner_radius(15)
                 .inner_margin(Margin::symmetric((8.0 * s) as i8, (3.0 * s) as i8))
                 .show(ui, |ui| {
@@ -1134,7 +1202,10 @@ fn expanded_content(
                 action = Some(ShellAction::Collapse);
             }
             if compact_header {
-                let menu = ui.add_sized(Vec2::splat(28.0 * s), Button::new("···").frame(false));
+                let menu = ui.add_sized(
+                    Vec2::splat(28.0 * s),
+                    Button::new("···").corner_radius((14.0 * s).round() as u8),
+                );
                 menu.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "更多操作")
                 });
@@ -1196,6 +1267,16 @@ fn expanded_content(
         return action;
     };
     let height = (dock_rect.top() - ui.cursor().top() - 4.0 * s).max(0.0);
+    #[cfg(any(windows, test))]
+    if page == Page::Capture {
+        workbench.capture.show_capsule(ui, height, s);
+        return action;
+    }
+    #[cfg(windows)]
+    if matches!(page, Page::AiWorkbench | Page::Translation) {
+        state.web.show(ui, page == Page::Translation, height);
+        return action;
+    }
     if page == Page::Tasks {
         let content = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), height));
         ui.scope_builder(UiBuilder::new().max_rect(content), |ui| {
@@ -1279,11 +1360,8 @@ fn expanded_content(
                     );
                 }
                 #[cfg(windows)]
-                Page::Music => state.player.capsule(ui, &mut sources.media, s),
+                Page::Music => surface(ui, s, |ui| state.player.capsule(ui, &mut sources.media, s)),
                 Page::Focus => {
-                    let dial_size = (ui.available_width() * 0.30)
-                        .min(height)
-                        .clamp(76.0 * s, 220.0 * s);
                     let timer = &workspace.focus;
                     let seconds = timer.seconds_left(now.timestamp_millis());
                     let tint = focus::session_color(
@@ -1294,81 +1372,117 @@ fn expanded_content(
                     if state.focus_reset_confirmation != timer.session_id {
                         state.focus_reset_confirmation = None;
                     }
-                    let mut controls = |ui: &mut Ui| {
-                        if let Some((minutes, kind)) = focus::presets(
-                            ui,
-                            timer.duration_minutes,
-                            timer.kind,
-                            timer.session_id.is_none(),
-                        ) {
-                            action = Some(ShellAction::SelectFocusPreset(minutes, kind));
-                        }
-                        if !timer.label.is_empty()
-                            && timer.kind == crate::workspace::FocusKind::Focus
-                        {
-                            ui.add(
-                                egui::Label::new(RichText::new(&timer.label).strong()).truncate(),
+                    let width = ui.available_width().min(380.0 * s);
+                    let has_label =
+                        !timer.label.is_empty() && timer.kind == crate::workspace::FocusKind::Focus;
+                    let controls_height = if has_label { 87.0 } else { 63.0 } * s;
+                    let dial_size = (height - controls_height).clamp(76.0 * s, 162.0 * s);
+                    let group = Rect::from_min_size(
+                        pos2(ui.max_rect().center().x - width / 2.0, ui.cursor().top()),
+                        vec2(width, 0.0),
+                    );
+                    ui.scope_builder(UiBuilder::new().max_rect(group), |ui| {
+                        ui.set_width(width);
+                        ui.spacing_mut().button_padding.x = 6.0 * s;
+                        ui.vertical_centered(|ui| {
+                            focus::dial(
+                                ui,
+                                seconds,
+                                timer.duration_minutes,
+                                focus::status(timer),
+                                tint,
+                                dial_size.min(width),
                             );
-                        }
-                        ui.horizontal_wrapped(|ui| {
-                            let label = if timer.target_at.is_some() {
-                                "暂停计时"
-                            } else if timer.session_id.is_some() {
-                                "继续计时"
-                            } else {
-                                "开始计时"
-                            };
-                            let ink = if ui.visuals().dark_mode {
-                                Color32::BLACK
-                            } else {
-                                Color32::WHITE
-                            };
-                            if ui
-                                .add(
-                                    Button::new(RichText::new(label).color(ink).strong())
-                                        .min_size(vec2(88.0, 30.0) * s)
-                                        .fill(tint)
-                                        .corner_radius(16),
-                                )
-                                .clicked()
-                            {
-                                action = Some(ShellAction::ToggleFocus);
+                            if has_label {
+                                ui.add(
+                                    egui::Label::new(RichText::new(&timer.label).strong())
+                                        .truncate(),
+                                );
                             }
-                            if let Some(session) = timer.session_id {
-                                if state.focus_reset_confirmation == Some(session) {
-                                    if ui.button("确认重置").clicked() {
+                            ui.horizontal(|ui| {
+                                let gap = ui.spacing().item_spacing.x;
+                                let size = vec2((width - 2.0 * gap) / 3.0, 25.0 * s);
+                                for (minutes, kind, name) in focus::PRESETS {
+                                    let short = match minutes {
+                                        45 => "深度 45 分",
+                                        25 => "专注 25 分",
+                                        _ => "休息 5 分",
+                                    };
+                                    let label = if width >= 315.0 * s { name } else { short };
+                                    let picked =
+                                        timer.duration_minutes == minutes && timer.kind == kind;
+                                    let button =
+                                        Button::selectable(picked, label).min_size(size).truncate();
+                                    if ui
+                                        .add_enabled(timer.session_id.is_none(), button)
+                                        .on_hover_text(name)
+                                        .clicked()
+                                    {
+                                        action =
+                                            Some(ShellAction::SelectFocusPreset(minutes, kind));
+                                    }
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                let label = if timer.target_at.is_some() {
+                                    "暂停计时"
+                                } else if timer.session_id.is_some() {
+                                    "继续计时"
+                                } else {
+                                    "开始计时"
+                                };
+                                let ink = if ui.visuals().dark_mode {
+                                    Color32::BLACK
+                                } else {
+                                    Color32::WHITE
+                                };
+                                let gap = ui.spacing().item_spacing.x;
+                                let confirming = timer.session_id.is_some()
+                                    && state.focus_reset_confirmation == timer.session_id;
+                                let main_width = if timer.session_id.is_some() {
+                                    (width - gap) / 2.0
+                                } else {
+                                    width
+                                };
+                                let size = |width| vec2(width, 29.0 * s);
+                                if confirming {
+                                    let session = timer.session_id.expect("confirmed session");
+                                    if ui
+                                        .add_sized(size(main_width), Button::new("确认重置"))
+                                        .clicked()
+                                    {
                                         action = Some(ShellAction::ResetFocus(session));
                                         state.focus_reset_confirmation = None;
                                     }
-                                    if ui.button("取消").clicked() {
+                                    if ui
+                                        .add_sized(size(main_width), Button::new("取消"))
+                                        .clicked()
+                                    {
                                         state.focus_reset_confirmation = None;
                                     }
-                                } else if ui.button("重置").clicked() {
-                                    state.focus_reset_confirmation = Some(session);
+                                } else {
+                                    if ui
+                                        .add_sized(
+                                            size(main_width),
+                                            Button::new(RichText::new(label).color(ink).strong())
+                                                .fill(tint)
+                                                .corner_radius(14),
+                                        )
+                                        .clicked()
+                                    {
+                                        action = Some(ShellAction::ToggleFocus);
+                                    }
+                                    if let Some(session) = timer.session_id
+                                        && ui
+                                            .add_sized(size(main_width), Button::new("重置"))
+                                            .clicked()
+                                    {
+                                        state.focus_reset_confirmation = Some(session);
+                                    }
                                 }
-                            }
+                            });
                         });
-                    };
-                    let dial = |ui: &mut Ui| {
-                        focus::dial(
-                            ui,
-                            seconds,
-                            timer.duration_minutes,
-                            focus::status(timer),
-                            tint,
-                            dial_size,
-                        );
-                    };
-                    if ui.available_width() >= 210.0 * s {
-                        ui.horizontal_top(|ui| {
-                            dial(ui);
-                            ui.add_space(10.0 * s);
-                            ui.vertical(controls);
-                        });
-                    } else {
-                        controls(ui);
-                        ui.vertical_centered(dial);
-                    }
+                    });
                     if timer.target_at.is_some() {
                         ui.ctx().request_repaint_after(Duration::from_secs(1));
                     }
@@ -1414,15 +1528,18 @@ fn toolbar_button(
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     let p = ui.painter();
     let hover = response.hovered() || response.has_focus();
-    super::controls::navigation_background(ui, &response, false, scale);
-    if selected {
-        p.rect_filled(
-            rect.shrink(2.0 * scale),
-            (5.0 * scale).round() as u8,
-            tone.selected,
-        );
-        super::controls::focus_outline(ui, &response, (5.0 * scale).round() as u8, tone.ink, scale);
-    }
+    let radius = (14.0 * scale).round() as u8;
+    let fill = if selected {
+        tone.selected
+    } else if response.is_pointer_button_down_on() {
+        tone.card.lerp_to_gamma(tone.ink, 0.16)
+    } else if hover {
+        tone.card.lerp_to_gamma(tone.ink, 0.09)
+    } else {
+        tone.inset()
+    };
+    p.rect_filled(rect.shrink(scale), radius, fill);
+    super::controls::focus_outline(ui, &response, radius, tone.signal, scale);
     let ink = if selected {
         tone.signal
     } else if hover {
@@ -1455,9 +1572,9 @@ fn caption(ui: &mut Ui, text: impl Into<String>, size: f32, color: Color32, bold
 fn surface(ui: &mut Ui, s: f32, contents: impl FnOnce(&mut Ui)) {
     let tone = Palette::from_ui(ui);
     Frame::new()
-        .fill(tone.card)
-        .corner_radius((7.0 * s).round() as u8)
-        .stroke(Stroke::new(1.0_f32, tone.border))
+        .fill(tone.inset())
+        .corner_radius((f32::from(CARD_RADIUS) * s).round() as u8)
+        .stroke(Stroke::new(1.0_f32, tone.border.gamma_multiply(0.65)))
         .inner_margin(Margin::symmetric(
             (8.0 * s).round() as i8,
             (5.0 * s).round() as i8,
@@ -1694,6 +1811,59 @@ fn focus_elapsed(timer: &Focus, timestamp: i64) -> f32 {
 mod tests {
     use super::*;
     use egui::Modifiers;
+
+    #[test]
+    fn compact_date_and_time_share_digit_height_and_baseline() {
+        for (dpi, scale, time) in [
+            (1.0, 1.0, "18:44"),
+            (1.25, 1.0, "10:44 AM"),
+            (1.5, 0.8, "18:44"),
+            (2.0, 1.4, "10:44 AM"),
+        ] {
+            let ctx = egui::Context::default();
+            super::super::configure_style(&ctx);
+            let rect = Rect::from_min_size(Pos2::ZERO, vec2(128.0, 32.0) * scale);
+            let mut input = egui::RawInput {
+                screen_rect: Some(rect),
+                ..Default::default()
+            };
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .native_pixels_per_point = Some(dpi);
+            let output = ctx.run_ui(input, |ui| {
+                draw_compact_date_time(
+                    ui.painter(),
+                    rect,
+                    "11/27".into(),
+                    time.into(),
+                    scale,
+                    &Palette::from_ui(ui),
+                );
+            });
+            let find = |label| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|item| match &item.shape {
+                        egui::Shape::Text(text) if text.galley.job.text == label => Some(text),
+                        _ => None,
+                    })
+                    .expect("compact clock text is drawn")
+            };
+            let date = find("11/27");
+            let time = find(time);
+            let digit = |text: &egui::epaint::TextShape| {
+                let digit = text.galley.rows[0].glyphs[0];
+                (digit.pos.y + text.pos.y, digit.font_height)
+            };
+            assert_eq!(digit(date), digit(time));
+            assert!(date.visual_bounding_rect().right() < time.visual_bounding_rect().left());
+            assert!(rect.contains_rect(date.visual_bounding_rect()));
+            assert!(rect.contains_rect(time.visual_bounding_rect()));
+        }
+    }
 
     #[test]
     fn today_overview_can_resume_a_paused_session() {
@@ -2202,6 +2372,32 @@ mod tests {
                 Some(ShellAction::SelectFocusPreset(selected, mode))
                     if selected == minutes && mode == kind
             ));
+        }
+        let labels = ["深度 45 分", "专注 25 分", "休息 5 分", "开始计时"];
+        let centers = labels.map(|label| {
+            let (output, _) = render(&mut state, vec![], pages, 245.0);
+            bounds(output, label)
+        });
+        assert!((centers[0].y - centers[2].y).abs() <= 1.0);
+        assert!((centers[1].x - centers[3].x).abs() <= 1.0);
+        assert!((centers[1].x - 122.5).abs() <= 1.0);
+        assert!(centers[3].y > centers[1].y);
+
+        let reordered = [
+            Page::Today,
+            Page::Notes,
+            Page::AiUsage,
+            Page::Calculator,
+            Page::Calendar,
+            Page::Focus,
+        ];
+        state.active = Some(Page::Focus);
+        for label in ["日历", "专注", "更多功能"] {
+            let (output, _) = render(&mut state, vec![], &reordered, 178.0);
+            assert!(
+                bounds(output, label).y > 280.0,
+                "{label} must remain in the dock"
+            );
         }
     }
 
