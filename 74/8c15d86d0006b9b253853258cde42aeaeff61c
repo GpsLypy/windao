@@ -1,0 +1,114 @@
+src/ui.rs
+  s_f26486ea6624c1::t_2fb3c1b8b5f252 9,43-44,204,470,727-729,733-734,747-809
+  s_f26486ea6624c1::t_b8a788fb817e44 5-6
+  s_f26486ea6624c1::t_d09cf73e1ca1a4 404-405,415
+  s_f26486ea6624c1::t_e11059928778dd 406
+  s_f26486ea6624c1::t_94f01f83b7f4d3 609-612,810
+  s_f26486ea6624c1::t_5a867bbf663c0e 23,80-81,115-116,171-172,214-225,545-547,608,739-746
+  s_f26486ea6624c1::t_528039c9927f21 28,280,391-397,400,402,407-411,413-414,416-418,422-423,444,446,451-469,471-475,485-486,811
+openspec/changes/windows-notch-panels/tasks.md
+  s_f26486ea6624c1::t_2efac751aacffe 9-10
+  s_f26486ea6624c1::t_6da27673826087 1-8
+src/ui/desktop_todo.rs
+  s_f26486ea6624c1::t_6f3d974915e5ef 16-118,164,309-361
+  s_f26486ea6624c1::t_d596f04595b45d 8-15,362
+openspec/changes/windows-notch-panels/.openspec.yaml
+  s_f26486ea6624c1::t_69df3265623d44 1-2
+src/ui/navigation.rs
+  s_f26486ea6624c1::t_5a867bbf663c0e 231-245
+  s_f26486ea6624c1::t_ffc496fd4dedcd 6,9-16,22,70,127-137,140-149,170-171,173-174,176-181,183-196,198,200,203,205-207
+src/ui/capsule.rs
+  s_f26486ea6624c1::t_98984c18f4f301 14-15,148,151-152,159,171,203-214,219,250-267,272-290,293,301,304,306,312,770,773-774,781-782,793,795-809,817,825-839,841-847,850,852-881,1006-1009,1036,1123,1196,1198-1203,1220-1229,1232,1580-1581,1589,1591,1603,1620,1622,1675-1676,1680,1682,1694,1711,1713,1743-1750,1756,1758,1769,1786,1788,1810-1811,1813,1815-1816,1820,1827,1844,1846
+  s_f26486ea6624c1::t_94f01f83b7f4d3 61-65,1197
+  s_f26486ea6624c1::t_ea1f959e612cbc 1852-1858
+  s_f26486ea6624c1::t_1b505af0b23882 10,16,22,1859,1890-1891,1893,1895-1896,1911,1916,1918-1942
+src/ui/calculator.rs
+  s_f26486ea6624c1::t_13434bc239fc97 53,62
+  s_f26486ea6624c1::t_94f01f83b7f4d3 1-52,54-61,63-94
+  s_f26486ea6624c1::t_dca719729d583d 95-98
+src/ui/capsule/silhouette.rs
+  s_f26486ea6624c1::t_a62de19633c034 13-71,74
+  s_f26486ea6624c1::t_a7879436b0e913 1-12,72-73
+src/ui/capsule/launcher.rs
+  s_f26486ea6624c1::t_5a867bbf663c0e 28,47,56,87,132,134-135
+  s_f26486ea6624c1::t_e5864020e38ef7 7,148,202
+src/windows.rs
+  s_f26486ea6624c1::t_a62de19633c034 1206
+  s_f26486ea6624c1::t_04588be291d138 16-18,631,727-752,1000,1098,1106,1115-1121,1145,1196-1205,1207-1212,1226-1228
+src/ui/capsule/skin.rs
+  s_f26486ea6624c1::t_b8a788fb817e44 237,246
+  s_f26486ea6624c1::t_eb3b56d3faf6da 250
+  s_f26486ea6624c1::t_d09cf73e1ca1a4 85
+  s_f26486ea6624c1::t_a62de19633c034 321-331
+  s_f26486ea6624c1::t_25bbedbb64af82 73-84,86-87,164,197-204,279,287,289,298,315,317
+src/app.rs
+  s_f26486ea6624c1::t_2fb3c1b8b5f252 55,765-768
+  s_f26486ea6624c1::t_5a867bbf663c0e 536,553-554
+  s_f26486ea6624c1::t_94f01f83b7f4d3 185-186
+  s_f26486ea6624c1::t_5ba00efba0b9c3 565,745-747
+src/dock.rs
+  s_f26486ea6624c1::t_5a867bbf663c0e 64-75,79,86-97,108-119,180,185-202,225,459
+  s_f26486ea6624c1::t_ea1f959e612cbc 435-458
+  s_f26486ea6624c1::t_32c44ad6c73577 423-434,460
+src/ui/capture.rs
+  s_f26486ea6624c1::t_94f01f83b7f4d3 59,69,77,89,101,111-113
+src/ui/dock_settings.rs
+  s_f26486ea6624c1::t_360f1dc79ee1f7 44-48,50,55-57,60-61,78-79,83-84,92-98,102-103,105,107-113,132-133,205-222
+  s_f26486ea6624c1::t_5f676a46e076d1 8-12,29-39,41,43,223-224
+src/ui/settings.rs
+  s_f26486ea6624c1::t_b8a788fb817e44 230-257,263,265-266
+  s_f26486ea6624c1::t_d09cf73e1ca1a4 294
+  s_f26486ea6624c1::t_a8783a18236495 62,89-94,120-127,199-204,206-208,216-229,267-270,272-276,278-279,281,283,285-286,288,290-293,295,297-309
+CHANGELOG.md
+  s_f26486ea6624c1::t_b32467dd253aac 3-9
+Cargo.lock
+  s_f26486ea6624c1::t_96e4661e0dc719 4322
+Cargo.toml
+  s_f26486ea6624c1::t_8bb59ecac5ac5b 3
+openspec/changes/windows-fluent-ui/.openspec.yaml
+  s_f26486ea6624c1::t_b7d8f93eafc220 1-2
+openspec/changes/windows-fluent-ui/design.md
+  s_f26486ea6624c1::t_1dfbe399680883 1-20
+openspec/changes/windows-fluent-ui/proposal.md
+  s_f26486ea6624c1::t_86201feb555b8a 1-23
+openspec/changes/windows-fluent-ui/specs/windows-fluent-ui/spec.md
+  s_f26486ea6624c1::t_3f9256ab2b3fa8 1-19
+openspec/changes/windows-fluent-ui/tasks.md
+  s_f26486ea6624c1::t_c2d51dbad64767 1-6
+openspec/changes/windows-notch-panels/design.md
+  s_f26486ea6624c1::t_b9a116bafa88ab 1-7
+openspec/changes/windows-notch-panels/proposal.md
+  s_f26486ea6624c1::t_e9acd0d1afd023 1-20
+openspec/changes/windows-notch-panels/specs/windows-notch-panels/spec.md
+  s_f26486ea6624c1::t_01a61ee83a909f 1-24
+src/app/desktop_todo.rs
+  s_f26486ea6624c1::t_96d9ebc3130ec4 5-8,19-20,25-26,29,41-51,55,60-150,152,220-223
+src/calendar_sync.rs
+  s_f26486ea6624c1::t_65fb7607b60fac 35-53
+src/ui/controls.rs
+  s_f26486ea6624c1::t_6abc3fff0faf53 1-38
+src/ui/news.rs
+  s_f26486ea6624c1::t_3f66118898fbd6 1-122
+src/ui/tests.rs
+  s_f26486ea6624c1::t_db1f4ae7d17adb 26,28,30-31,37,54,56,332,334,336,348,365,367
+src/ui/workbench_tools.rs
+  s_f26486ea6624c1::t_d9b0576f6c636d 28,31-35,40,45
+src/workspace.rs
+  s_f26486ea6624c1::t_de57cc2d14fd68 318-319,328-329
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "748c15d86d0006b9b253853258cde42aeaeff61c",
+  "prompts": {},
+  "sessions": {
+    "s_f26486ea6624c1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a21603-ebf6-7503-9876-f6050c07cd76",
+        "model": "gpt-6.2-sol"
+      },
+      "human_author": "GpsLypy <80027734+GpsLypy@users.noreply.github.com>"
+    }
+  }
+}
