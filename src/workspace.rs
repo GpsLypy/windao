@@ -315,6 +315,8 @@ pub struct DesktopTodoSettings {
     pub open: bool,
     pub pinned: bool,
     pub bounds: Option<DesktopTodoBounds>,
+    pub bubble_visible: bool,
+    pub bubble_position: Option<[i32; 2]>,
 }
 
 impl Default for DesktopTodoSettings {
@@ -323,6 +325,8 @@ impl Default for DesktopTodoSettings {
             open: false,
             pinned: true,
             bounds: None,
+            bubble_visible: true,
+            bubble_position: None,
         }
     }
 }

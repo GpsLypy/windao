@@ -3,15 +3,23 @@ use eframe::egui::{
     StrokeKind, Ui, Vec2, WidgetInfo, WidgetType, vec2,
 };
 
-use super::{Page, Workbench, accent};
+use super::{Page, Workbench, controls};
 
 impl Page {
+    const GROUPS: &'static [&'static str] = &[
+        "工作区",
+        "工具",
+        #[cfg(windows)]
+        "桌面工具",
+        "偏好",
+    ];
+
     fn group(self) -> &'static str {
         match self {
             Self::AiUsage | Self::Today | Self::Calendar | Self::Notifications | Self::Tasks => {
                 "工作区"
             }
-            Self::Focus | Self::Notes | Self::Dates => "工具",
+            Self::Focus | Self::Notes | Self::Dates | Self::Calculator | Self::News => "工具",
             #[cfg(windows)]
             Self::Music | Self::Weather => "工具",
             Self::Settings => "偏好",
@@ -59,11 +67,7 @@ impl Workbench {
                 });
             return;
         }
-        let surface = if root.visuals().dark_mode {
-            Color32::from_rgb(37, 39, 43)
-        } else {
-            Color32::from_rgb(233, 235, 240)
-        };
+        let surface = root.visuals().panel_fill;
         egui::Panel::left("workbench-sidebar")
             .exact_size(224.0)
             .resizable(false)
@@ -119,27 +123,31 @@ impl Workbench {
                     .id_salt("workbench-pages")
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        let mut previous = "";
                         let mut count = 0;
-                        for &page in Page::ALL {
-                            if (page == Page::Settings && filter.is_empty())
-                                || !page.title().contains(&filter)
-                            {
+                        for &group in Page::GROUPS {
+                            let mut pages = Page::ALL
+                                .iter()
+                                .copied()
+                                .filter(|page| {
+                                    page.group() == group
+                                        && (*page != Page::Settings || !filter.is_empty())
+                                        && page.title().contains(&filter)
+                                })
+                                .peekable();
+                            if pages.peek().is_none() {
                                 continue;
                             }
-                            let group = page.group();
-                            if previous != group {
-                                ui.add_space(8.0);
-                                ui.horizontal(|ui| {
-                                    ui.add_space(8.0);
-                                    ui.weak(egui::RichText::new(group).size(11.0));
-                                });
-                                previous = group;
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                ui.add_space(12.0);
+                                ui.weak(egui::RichText::new(group).size(12.0));
+                            });
+                            for page in pages {
+                                if nav_row(ui, page, self.page == page) || (enter && count == 0) {
+                                    choice = Some(page);
+                                }
+                                count += 1;
                             }
-                            if nav_row(ui, page, self.page == page) || (enter && count == 0) {
-                                choice = Some(page);
-                            }
-                            count += 1;
                         }
                         if count == 0 {
                             ui.weak("没有匹配的页面");
@@ -159,93 +167,46 @@ impl Workbench {
 }
 
 fn nav_row(ui: &mut Ui, page: Page, selected: bool) -> bool {
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
-
-    response.widget_info(|| {
-        WidgetInfo::selected(WidgetType::SelectableLabel, true, selected, page.title())
-    });
-    let visuals = ui.style().interact_selectable(&response, selected);
-    if selected || response.hovered() || response.has_focus() {
-        ui.painter().rect_filled(rect, 7, visuals.weak_bg_fill);
-    }
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect,
-            7,
-            Stroke::new(1.5_f32, accent(ui.visuals().dark_mode)),
-            StrokeKind::Inside,
-        );
-    }
-    if selected {
-        let tick = Rect::from_center_size(
-            Pos2::new(rect.left() + 1.5, rect.center().y),
-            vec2(3.0, 16.0),
-        );
-        ui.painter()
-            .rect_filled(tick, 2, accent(ui.visuals().dark_mode));
-    }
-    let color = if selected {
-        ui.visuals().strong_text_color()
-    } else {
-        ui.visuals().text_color()
-    };
-    let center = Pos2::new(rect.left() + 23.0, rect.center().y);
-    let (tile, glyph) = tile_colors(page);
-    ui.painter()
-        .rect_filled(Rect::from_center_size(center, Vec2::splat(22.0)), 5, tile);
-    draw_icon(ui, page, center, glyph, 1.0);
-    ui.painter().text(
-        Pos2::new(rect.left() + 43.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        page.title(),
-        FontId::proportional(13.0),
-        color,
-    );
-    response.clicked()
+    navigation_row(ui, page.title(), selected, Some(page))
 }
 
-fn tile_colors(page: Page) -> (Color32, Color32) {
-    let color = match page {
-        #[cfg(windows)]
-        Page::Mailbox => Color32::from_rgb(61, 110, 150),
-        #[cfg(windows)]
-        Page::AiWorkbench | Page::Translation => Color32::from_rgb(53, 104, 129),
-        #[cfg(windows)]
-        Page::Capture => Color32::from_rgb(146, 72, 91),
-        #[cfg(windows)]
-        Page::Developer | Page::Authenticator => Color32::from_rgb(65, 109, 89),
-        Page::AiUsage => Color32::from_rgb(57, 108, 147),
-        Page::Today => Color32::from_rgb(37, 119, 237),
-        Page::Calendar => Color32::from_rgb(207, 68, 75),
-        Page::Tasks => Color32::from_rgb(192, 102, 16),
-        Page::Focus => Color32::from_rgb(102, 87, 190),
-        Page::Notes => Color32::from_rgb(246, 196, 50),
-        Page::Dates => Color32::from_rgb(168, 71, 105),
-        Page::Notifications => Color32::from_rgb(62, 113, 139),
-        Page::Settings => Color32::from_rgb(114, 120, 130),
-        #[cfg(windows)]
-        Page::Music => Color32::from_rgb(211, 69, 120),
-        #[cfg(windows)]
-        Page::Clipboard => Color32::from_rgb(186, 102, 25),
-        #[cfg(windows)]
-        Page::Performance => Color32::from_rgb(51, 131, 82),
-        #[cfg(windows)]
-        Page::Weather | Page::Wireless => Color32::from_rgb(39, 129, 154),
-        #[cfg(windows)]
-        Page::Plugins => Color32::from_rgb(123, 89, 159),
-        #[cfg(windows)]
-        Page::Tools | Page::Files => Color32::from_rgb(110, 116, 124),
-        #[cfg(windows)]
-        Page::Market => Color32::from_rgb(112, 122, 72),
-    };
-    (
-        color,
-        if page == Page::Notes {
-            Color32::from_gray(48)
+pub(super) fn navigation_row(ui: &mut Ui, label: &str, selected: bool, icon: Option<Page>) -> bool {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
+    response.widget_info(|| {
+        WidgetInfo::selected(
+            WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            selected,
+            label,
+        )
+    });
+    controls::navigation_background(ui, &response, selected, 1.0);
+    let ink = ui.visuals().text_color();
+    let x = if let Some(page) = icon {
+        let glyph = if selected {
+            ui.visuals().hyperlink_color
         } else {
-            Color32::WHITE
-        },
-    )
+            ink
+        };
+        draw_icon(
+            ui,
+            page,
+            Pos2::new(rect.left() + 21.0, rect.center().y),
+            glyph,
+            1.0,
+        );
+        rect.left() + 40.0
+    } else {
+        rect.left() + 13.0
+    };
+    ui.painter().text(
+        Pos2::new(x, rect.center().y),
+        Align2::LEFT_CENTER,
+        label,
+        FontId::proportional(14.0),
+        ink,
+    );
+    response.clicked()
 }
 
 pub(super) fn draw_icon(ui: &Ui, page: Page, center: Pos2, color: Color32, scale: f32) {
@@ -267,6 +228,21 @@ pub(super) fn draw_icon(ui: &Ui, page: Page, center: Pos2, color: Color32, scale
         p.circle_stroke(at(x, y), r * scale, stroke);
     };
     match page {
+        Page::Calculator => {
+            rect(-7., -8., 14., 16.);
+            line((-4., -3.), (4., -3.));
+            for x in [-3., 3.] {
+                for y in [1., 5.] {
+                    p.circle_filled(at(x, y), scale, color);
+                }
+            }
+        }
+        Page::News => {
+            rect(-8., -7., 16., 14.);
+            line((-5., -3.), (5., -3.));
+            line((-5., 0.), (5., 0.));
+            line((-5., 3.), (2., 3.));
+        }
         #[cfg(windows)]
         Page::AiWorkbench => {
             rect(-8., -6., 16., 10.);

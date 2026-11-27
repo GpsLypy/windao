@@ -70,10 +70,21 @@ impl Palette {
         v.selection.bg_fill = self.selected;
         v.selection.stroke = Stroke::new(1.0_f32, self.signal);
         v.widgets.noninteractive.fg_stroke.color = self.caption;
-        v.widgets.inactive.weak_bg_fill = self.card;
-        v.widgets.hovered.weak_bg_fill = self.border;
-        v.widgets.hovered.bg_stroke.color = self.signal;
-        v.widgets.active.bg_stroke.color = self.signal;
+        for (widget, fill, outline) in [
+            (&mut v.widgets.inactive, self.card, self.border),
+            (
+                &mut v.widgets.hovered,
+                self.card.lerp_to_gamma(self.ink, 0.08),
+                self.border,
+            ),
+            (&mut v.widgets.active, self.selected, self.ink),
+            (&mut v.widgets.open, self.card, self.border),
+        ] {
+            widget.bg_fill = fill;
+            widget.weak_bg_fill = fill;
+            widget.bg_stroke = Stroke::new(1.0_f32, outline);
+            widget.fg_stroke.color = self.ink;
+        }
     }
     pub fn from_ui(ui: &Ui) -> Self {
         let v = ui.visuals();
@@ -150,6 +161,7 @@ pub(super) fn cloud_glow(
     corners: CornerRadius,
     pointer: Option<Pos2>,
     tint: Color32,
+    outline: bool,
 ) {
     let pointer = pointer
         .filter(|point| rect.contains(*point))
@@ -182,12 +194,14 @@ pub(super) fn cloud_glow(
         mesh.add_triangle(0, i, 1 + i % n);
     }
     p.add(mesh);
-    p.rect_stroke(
-        rect,
-        corners,
-        Stroke::new(1.0_f32, tint.gamma_multiply(0.30)),
-        StrokeKind::Inside,
-    );
+    if outline {
+        p.rect_stroke(
+            rect,
+            corners,
+            Stroke::new(1.0_f32, tint.gamma_multiply(0.30)),
+            StrokeKind::Inside,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -220,7 +234,7 @@ mod tests {
                 },
             )
         };
-        for label in ["奶油", "刘海", "收起时显示猫咪伙伴"] {
+        for label in ["经典黑", "奶油", "胶囊", "刘海", "收起时显示猫咪伙伴"] {
             let out = render(vec![]);
             let bounds = out
                 .platform_output
@@ -229,11 +243,11 @@ mod tests {
                 .nodes
                 .into_iter()
                 .find_map(|(_, node)| {
-                    (node.label() == Some(label))
+                    (node.label() == Some(label) || node.value() == Some(label))
                         .then(|| node.bounds())
                         .flatten()
                 })
-                .unwrap();
+                .unwrap_or_else(|| panic!("missing setting {label}"));
             let pos = egui::pos2(
                 ((bounds.x0 + bounds.x1) / 2.) as f32,
                 ((bounds.y0 + bounds.y1) / 2.) as f32,
@@ -262,7 +276,7 @@ mod tests {
             })
             .unwrap();
         drop(store);
-        let store = Store::open(tmp.path().into()).unwrap();
+        let mut store = Store::open(tmp.path().into()).unwrap();
         for expanded in [false, true] {
             let ctx = egui::Context::default();
             let compact = capsule::compact_size(&store, &store.state().settings.dock, None);
@@ -270,8 +284,9 @@ mod tests {
             let size = if expanded { vec2(680., 318.) } else { compact };
             let screen = Rect::from_min_size(Pos2::ZERO, size);
             let mut state = CapsuleState::default();
+            let mut workbench = crate::ui::Workbench::default();
             #[cfg(windows)]
-            let mut media = crate::music::Media::new(ctx.clone());
+            let mut sources = crate::ui::FeatureSources::new(ctx.clone());
             let out = ctx.run_ui(
                 RawInput {
                     screen_rect: Some(screen),
@@ -280,7 +295,7 @@ mod tests {
                 |ui| {
                     capsule::draw(
                         ui,
-                        &store,
+                        &mut store,
                         &mut state,
                         CapsuleOptions {
                             dock: DockEdge::Top,
@@ -297,13 +312,23 @@ mod tests {
                             minimal: false,
                             pages: &[Page::Calendar],
                         },
+                        &mut workbench,
                         #[cfg(windows)]
-                        &mut media,
+                        &mut sources,
                     );
                 },
             );
-            assert!(out.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Rect(bg)
-                if bg.rect==screen && bg.fill==Palette::for_skin(CapsuleSkin::Cream,None).surface && bg.corner_radius.nw==0 && bg.corner_radius.sw>0)));
+            let fill = Palette::for_skin(CapsuleSkin::Cream, None).surface;
+            if expanded {
+                assert!(out.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Mesh(mesh)
+                    if mesh.vertices.first().is_some_and(|vertex| vertex.pos == screen.left_top() && vertex.color == fill)
+                        && mesh.vertices.get(1).is_some_and(|vertex| vertex.pos == screen.right_top())
+                        && mesh.vertices.iter().any(|vertex| vertex.pos == screen.left_top() + vec2(28.0, 28.0))
+                        && mesh.vertices.iter().any(|vertex| vertex.pos == screen.right_top() + vec2(-28.0, 28.0)))));
+            } else {
+                assert!(out.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(bg)
+                    if bg.rect == screen && bg.fill == fill && bg.corner_radius.nw == 0 && bg.corner_radius.sw > 0)));
+            }
         }
     }
 

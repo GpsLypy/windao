@@ -61,16 +61,40 @@ pub enum CapsulePage {
     Music,
     Focus,
     Notes,
+    Files,
+    Clipboard,
+    Calculator,
+    Capture,
+    AiWorkbench,
+    Market,
+    Translation,
+    Developer,
+    Performance,
+    AiUsage,
+    Authenticator,
+    News,
 }
 
 impl CapsulePage {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 18] = [
         Self::Today,
         Self::Calendar,
         Self::Tasks,
         Self::Music,
         Self::Focus,
         Self::Notes,
+        Self::Files,
+        Self::Clipboard,
+        Self::Calculator,
+        Self::Capture,
+        Self::AiWorkbench,
+        Self::Market,
+        Self::Translation,
+        Self::Developer,
+        Self::Performance,
+        Self::AiUsage,
+        Self::Authenticator,
+        Self::News,
     ];
 
     pub fn label(self) -> &'static str {
@@ -81,6 +105,18 @@ impl CapsulePage {
             Self::Music => "音乐",
             Self::Focus => "专注",
             Self::Notes => "便笺",
+            Self::Files => "文件",
+            Self::Clipboard => "剪贴板",
+            Self::Calculator => "计算器",
+            Self::Capture => "截屏与录屏",
+            Self::AiWorkbench => "AI 工作台",
+            Self::Market => "行情",
+            Self::Translation => "翻译",
+            Self::Developer => "开发工具",
+            Self::Performance => "系统监控",
+            Self::AiUsage => "AI 用量",
+            Self::Authenticator => "身份验证器",
+            Self::News => "资讯",
         }
     }
 }
@@ -141,8 +177,27 @@ pub struct DockSettings {
     pub avoid_browsers: bool,
     pub hide_fullscreen: bool,
     pub avoid_apps: Vec<String>,
+    #[serde(deserialize_with = "deserialize_pages")]
     pub pages: Vec<PageSetting>,
     pub resident_order: [Resident; 6],
+}
+
+fn deserialize_pages<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<PageSetting>, D::Error> {
+    let mut pages = Vec::<PageSetting>::deserialize(deserializer)?;
+    // The original six entries are present in every valid pre-upgrade workspace.
+    if pages.len() == 6
+        && CapsulePage::ALL[..6]
+            .iter()
+            .all(|page| pages.iter().any(|entry| entry.page == *page))
+    {
+        pages.extend(CapsulePage::ALL[6..].iter().map(|&page| PageSetting {
+            page,
+            enabled: page != CapsulePage::News,
+        }));
+    }
+    Ok(pages)
 }
 
 impl Default for DockSettings {
@@ -167,7 +222,7 @@ impl Default for DockSettings {
             pages: CapsulePage::ALL
                 .map(|page| PageSetting {
                     page,
-                    enabled: true,
+                    enabled: page != CapsulePage::News,
                 })
                 .into(),
         }
@@ -363,6 +418,44 @@ mod tests {
         assert!(!settings.oled_shift);
         assert!(!settings.top_lyrics);
         assert!(!settings.exclude_from_capture);
+    }
+
+    #[test]
+    fn existing_page_order_and_visibility_survive_the_panel_upgrade() {
+        let original = serde_json::json!([
+            {"page": "notes", "enabled": true},
+            {"page": "calendar", "enabled": false},
+            {"page": "today", "enabled": true},
+            {"page": "tasks", "enabled": true},
+            {"page": "music", "enabled": false},
+            {"page": "focus", "enabled": true}
+        ]);
+        let upgraded: DockSettings = serde_json::from_value(serde_json::json!({
+            "pages": original
+        }))
+        .unwrap();
+        assert!(upgraded.validate().is_ok());
+        assert_eq!(
+            serde_json::to_value(&upgraded.pages[..6]).unwrap(),
+            original
+        );
+        assert!(
+            upgraded
+                .pages
+                .iter()
+                .any(|p| p.page == CapsulePage::AiUsage && p.enabled)
+        );
+        assert!(
+            upgraded
+                .pages
+                .iter()
+                .any(|p| p.page == CapsulePage::News && !p.enabled)
+        );
+        assert_eq!(
+            serde_json::from_value::<DockSettings>(serde_json::to_value(&upgraded).unwrap())
+                .unwrap(),
+            upgraded
+        );
     }
 
     #[test]

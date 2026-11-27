@@ -25,20 +25,24 @@ impl WorkbenchTools {
 
 type Result<T> = std::result::Result<T, String>;
 
-struct Job<T>(Receiver<Result<T>>);
+pub(super) struct Job<T>(Receiver<Result<T>>);
 
 impl<T: Send + 'static> Job<T> {
-    fn start(ctx: &egui::Context, work: impl FnOnce() -> Result<T> + Send + 'static) -> Self {
+    pub(super) fn start(
+        ctx: &egui::Context,
+        work: impl FnOnce() -> Result<T> + Send + 'static,
+    ) -> Self {
+        let viewport = ctx.viewport_id();
         let ctx = ctx.clone();
         let (send, receive) = channel();
         std::thread::spawn(move || {
             let _ = send.send(work());
-            ctx.request_repaint();
+            ctx.request_repaint_of(viewport);
         });
         Self(receive)
     }
 
-    fn poll(&self) -> Option<Result<T>> {
+    pub(super) fn poll(&self) -> Option<Result<T>> {
         match self.0.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,

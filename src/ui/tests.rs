@@ -23,17 +23,18 @@ fn compact_capsule_responds_to_actual_button_click() {
         })
         .unwrap();
 
+    let mut workbench = crate::ui::Workbench::default();
     #[cfg(windows)]
-    let mut media = crate::music::Media::new(ctx.clone());
+    let mut sources = crate::ui::FeatureSources::new(ctx.clone());
     let mut capsule_state = capsule::CapsuleState::default();
-    let settings = &store.state().settings.dock;
-    let compact = capsule::compact_size(&store, settings, None);
+    let settings = store.state().settings.dock.clone();
+    let compact = capsule::compact_size(&store, &settings, None);
     let mut render = |input| {
         let mut frame = None;
         let _ = ctx.run_ui(input, |ui| {
             frame = Some(capsule::draw(
                 ui,
-                &store,
+                &mut store,
                 &mut capsule_state,
                 capsule::CapsuleOptions {
                     dock: DockEdge::Top,
@@ -50,8 +51,9 @@ fn compact_capsule_responds_to_actual_button_click() {
                     minimal: false,
                     pages: &[Page::Today],
                 },
+                &mut workbench,
                 #[cfg(windows)]
-                &mut media,
+                &mut sources,
             ));
         });
         frame.unwrap()
@@ -327,10 +329,11 @@ fn capsule_opens_calendar_on_its_selected_day() {
     ctx.enable_accesskit();
     configure_style(&ctx);
     let tmp = tempfile::tempdir().unwrap();
-    let store = Store::open(tmp.path().into()).unwrap();
+    let mut store = Store::open(tmp.path().into()).unwrap();
     let mut state = capsule::CapsuleState::default();
+    let mut workbench = crate::ui::Workbench::default();
     #[cfg(windows)]
-    let mut media = crate::music::Media::new(ctx.clone());
+    let mut sources = crate::ui::FeatureSources::new(ctx.clone());
     let expected = Local::now().date_naive();
     let expected = expected
         .with_day(if expected.day() == 8 { 9 } else { 8 })
@@ -342,7 +345,7 @@ fn capsule_opens_calendar_on_its_selected_day() {
         let output = ctx.run_ui(input, |ui| {
             action = capsule::draw(
                 ui,
-                &store,
+                &mut store,
                 &mut state,
                 capsule::CapsuleOptions {
                     dock: DockEdge::Top,
@@ -359,8 +362,9 @@ fn capsule_opens_calendar_on_its_selected_day() {
                     minimal: false,
                     pages: &[Page::Calendar],
                 },
+                &mut workbench,
                 #[cfg(windows)]
-                &mut media,
+                &mut sources,
             )
             .action;
         });

@@ -59,11 +59,7 @@ impl Workbench {
                 });
             return;
         }
-        let fill = if root.visuals().dark_mode {
-            Color32::from_rgb(37, 39, 43)
-        } else {
-            Color32::from_rgb(233, 235, 240)
-        };
+        let fill = root.visuals().panel_fill;
         egui::Panel::left("settings-sidebar")
             .exact_size(224.0)
             .resizable(false)
@@ -90,16 +86,12 @@ impl Workbench {
                                 ui.add_space(8.0);
                                 ui.weak(RichText::new(group).small());
                             }
-                            let active = self.settings_section == section;
-                            let response = ui.add_sized(
-                                vec2(ui.available_width(), 31.0),
-                                egui::Button::selectable(active, label).right_text(if active {
-                                    "●"
-                                } else {
-                                    ""
-                                }),
-                            );
-                            if response.clicked() {
+                            if navigation::navigation_row(
+                                ui,
+                                label,
+                                self.settings_section == section,
+                                None,
+                            ) {
                                 self.settings_section = section;
                             }
                         }
@@ -125,6 +117,14 @@ impl Workbench {
             .show(ui, |ui| match self.settings_section {
                 Section::General => {
                     self.general_settings(ui, &mut settings, windows);
+                    #[cfg(windows)]
+                    card(ui, |ui| {
+                        setting_switch(
+                            ui,
+                            &mut settings.desktop_todo.bubble_visible,
+                            "显示桌面待办悬浮球",
+                        );
+                    });
                     if store.can_import()
                         && legacy.is_some_and(|path| path.is_file())
                         && ui.button("从旧版导入工作区…").clicked()
@@ -196,13 +196,16 @@ impl Workbench {
         });
         card(ui, |ui| {
             subhead(ui, "外观与交互");
-            ui.horizontal_wrapped(|ui| {
-                ui.label("工作台主题");
-                for theme in [Appearance::System, Appearance::Light, Appearance::Dark] {
+            let themes = [Appearance::System, Appearance::Light, Appearance::Dark];
+            choice(
+                ui,
+                "工作台主题",
+                &mut settings.appearance,
+                themes.map(|theme| {
                     let label = appearance_label(&theme);
-                    ui.selectable_value(&mut settings.appearance, theme, label);
-                }
-            });
+                    (theme, label)
+                }),
+            );
             setting_switch(ui, &mut settings.open_on_hover, "指针靠近时展开");
             setting_switch(ui, &mut settings.always_on_top, "置于其他窗口上方");
             setting_switch(ui, &mut settings.reduced_motion, "减少动态效果");
@@ -210,50 +213,100 @@ impl Workbench {
     }
 }
 
-fn setting_switch(ui: &mut Ui, value: &mut bool, label: &str) -> egui::Response {
-    let (rect, mut response) =
-        ui.allocate_exact_size(vec2(ui.available_width(), 29.0), egui::Sense::click());
+pub(super) fn choice<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    name: &str,
+    value: &mut T,
+    options: impl AsRef<[(T, &'static str)]>,
+) {
+    let options = options.as_ref();
+    let current = options
+        .iter()
+        .find(|(option, _)| option == value)
+        .map_or("", |(_, label)| *label);
+    ui.horizontal_wrapped(|ui| {
+        let label = ui.label(name);
+        let mut show = |ui: &mut Ui| {
+            egui::ComboBox::from_id_salt(name)
+                .width(144.0)
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    for &(option, label) in options {
+                        ui.selectable_value(value, option, label);
+                    }
+                })
+                .response
+                .labelled_by(label.id)
+        };
+        if ui.available_width() >= 168.0 {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), show);
+        } else {
+            show(ui);
+        }
+    });
+}
+
+pub(super) fn setting_switch(ui: &mut Ui, value: &mut bool, label: &str) -> egui::Response {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let ink = ui.visuals().text_color();
+    let width = ui.available_width();
+    let text = ui
+        .painter()
+        .layout(label.to_owned(), font, ink, (width - 64.0).max(1.0));
+    let height = (text.size().y + 10.0).max(36.0);
+    let (rect, mut response) = ui.allocate_exact_size(vec2(width, height), egui::Sense::click());
     if response.clicked() {
         *value = !*value;
         response.mark_changed();
     }
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, *value, label)
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *value, label)
     });
-    let style = ui.style().interact_selectable(&response, *value);
-    if response.has_focus() {
-        ui.painter()
-            .rect_stroke(rect, 5, style.fg_stroke, StrokeKind::Inside);
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_role(egui::accesskit::Role::Switch);
+    });
+    let painter = ui.painter();
+    if response.hovered() {
+        painter.rect_filled(rect, 5, ink.gamma_multiply(0.045));
     }
-    let center = rect.center().y;
-    ui.painter().text(
-        egui::pos2(rect.left(), center),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::TextStyle::Body.resolve(ui.style()),
-        ui.visuals().text_color(),
+    controls::focus_outline(ui, &response, 5, ink, 1.0);
+    painter.galley(
+        egui::pos2(rect.left() + 8.0, rect.center().y - text.size().y / 2.0),
+        text,
+        ink,
     );
-    let track = Rect::from_center_size(egui::pos2(rect.right() - 18.0, center), vec2(32.0, 18.0));
+    let track = Rect::from_center_size(rect.right_center() - vec2(28.0, 0.0), vec2(40.0, 20.0));
+    let dark = ui.visuals().dark_mode;
     let tint = if *value {
-        accent(ui.visuals().dark_mode)
+        accent(dark)
     } else {
-        ui.visuals().widgets.inactive.bg_stroke.color
+        ui.visuals().faint_bg_color
     };
-    ui.painter().rect_filled(track, 9, tint);
-    let thumb = if *value {
-        track.right() - 9.0
+    let outline = if *value {
+        tint
     } else {
-        track.left() + 9.0
+        ui.visuals().weak_text_color()
     };
-    ui.painter().circle_filled(
-        egui::pos2(thumb, center),
-        6.0,
-        if *value && ui.visuals().dark_mode {
-            Color32::from_gray(35)
-        } else {
-            Color32::WHITE
-        },
+    painter.rect(
+        track,
+        10,
+        tint,
+        Stroke::new(1.0_f32, outline),
+        StrokeKind::Inside,
     );
+    let thumb = if *value {
+        track.right() - 10.0
+    } else {
+        track.left() + 10.0
+    };
+    let thumb_ink = if *value && !dark {
+        Color32::WHITE
+    } else if *value {
+        Color32::from_gray(20)
+    } else {
+        ink
+    };
+    painter.circle_filled(egui::pos2(thumb, track.center().y), 6.0, thumb_ink);
     response
 }
 

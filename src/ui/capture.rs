@@ -56,6 +56,7 @@ impl Capture {
                 self.error = crate::windows::SystemTool::ScreenCapture.open().err();
             }
         });
+        let capsule = ui.ctx().viewport_id() == eframe::egui::ViewportId::ROOT;
         super::card(ui, |ui| {
             super::subhead(ui, "录屏");
             if modern {
@@ -65,7 +66,7 @@ impl Capture {
                 }
                 ui.weak("区域录制需要支持视频的 Windows 11 截图工具。也可以使用下方的应用录制。");
             }
-            ui.label("录制一个应用窗口。工作台会最小化，请在 3 秒内切换到目标应用，然后在 Game Bar 的「捕获」面板开始录制。");
+            ui.label("录制应用窗口时，请在 3 秒内切换到目标应用，然后在 Game Bar 的「捕获」面板开始录制。");
             if ui
                 .add_enabled(
                     self.pending.is_none(),
@@ -73,7 +74,7 @@ impl Capture {
                 )
                 .clicked()
             {
-                self.game_bar(ui);
+                self.game_bar(ui, capsule);
             }
             ui.weak("Win + Alt + R 可停止录制。Game Bar 将 MP4 保存到捕获文件夹。");
             if ui.button("打开捕获文件夹").clicked() {
@@ -85,7 +86,7 @@ impl Capture {
         }
     }
 
-    fn game_bar(&mut self, ui: &Ui) {
+    fn game_bar(&mut self, ui: &Ui, capsule: bool) {
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let stopped = cancel.clone();
@@ -97,7 +98,7 @@ impl Capture {
                 std::thread::sleep(Duration::from_secs(3));
                 if !stopped.load(Ordering::Acquire) {
                     let result = native::game_bar();
-                    if result.is_err() {
+                    if result.is_err() && !capsule {
                         ctx.send_viewport_cmd_to(viewport, ViewportCommand::Minimized(false));
                     }
                     let _ = tx.send(result);
@@ -107,7 +108,9 @@ impl Capture {
             Ok(_) => {
                 self.error = None;
                 self.pending = Some(PendingLaunch { cancel, result: rx });
-                ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
+                if !capsule {
+                    ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
+                }
             }
             Err(_) => self.error = Some("无法启动应用录制面板。".into()),
         }

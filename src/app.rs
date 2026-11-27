@@ -52,7 +52,7 @@ pub fn run() -> Result<(), String> {
             .with_transparent(true)
             .with_decorations(false)
             .with_resizable(false)
-            .with_drag_and_drop(false)
+            .with_drag_and_drop(true)
             .with_taskbar(false)
             .with_visible(false)
             .with_active(false),
@@ -182,6 +182,8 @@ impl Desktop {
         if self.expanded != expanded {
             if expanded {
                 self.capsule_state.open_home();
+            } else if self.capsule_state.shows_authenticator() {
+                self.workbench.lock_authenticator();
             }
             self.expanded = expanded;
             self.pointer_left_at = None;
@@ -531,7 +533,7 @@ impl Desktop {
             .collect();
         let capsule = capsule::draw(
             root,
-            &self.store,
+            &mut self.store,
             &mut self.capsule_state,
             CapsuleOptions {
                 dock: dock.edge,
@@ -548,7 +550,8 @@ impl Desktop {
                 minimal: dock.minimal,
                 pages: &pages,
             },
-            &mut self.sources.media,
+            &mut self.workbench,
+            &mut self.sources,
         );
         // Win32 can resize before egui receives the new client size and scale.
         if !hidden
@@ -559,6 +562,7 @@ impl Desktop {
             shell.update_region(
                 capsule.rect,
                 f32::from(capsule.radius),
+                capsule.shoulder,
                 ctx.pixels_per_point(),
             );
         }
@@ -606,10 +610,6 @@ impl Desktop {
             ShellAction::Collapse => self.set_expanded(false, false),
             ShellAction::SetPinned(value) => self.pinned = value,
             ShellAction::OpenWorkbench(page) => self.open_workbench(page),
-            ShellAction::LaunchSystem(tool) => match tool.open() {
-                Ok(()) => self.set_expanded(false, false),
-                Err(error) => self.capsule_state.report_error(Some(error)),
-            },
             ShellAction::OpenCalendar(date) => {
                 self.workbench.select_calendar_date(date);
                 self.open_workbench(Page::Calendar);
@@ -742,7 +742,9 @@ impl eframe::App for Desktop {
                     && self.occlusion == Occlusion::Clear)
                 || (self.workspace_open && self.workbench.page == Page::Music),
         );
-        let repaint_clock = self.store.state().settings.desktop_todo.open
+        let todo = self.store.state().settings.desktop_todo;
+        let repaint_clock = todo.open
+            || todo.bubble_visible
             || self.expanded
             || self.workspace_open
             || (!dock.minimal && self.occlusion == Occlusion::Clear);
@@ -760,7 +762,10 @@ impl eframe::App for Desktop {
             return;
         }
         let ctx = ui.ctx().clone();
-        if self.expanded && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        if self.expanded
+            && ctx.memory(|memory| memory.top_modal_layer().is_none())
+            && ctx.input(|input| input.key_pressed(egui::Key::Escape))
+        {
             self.set_expanded(false, false);
         }
         self.workbench

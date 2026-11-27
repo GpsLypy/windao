@@ -5,7 +5,11 @@ use crate::dock::{
 };
 use crate::workspace::Settings;
 
-use super::{DisplayOption, card, field, subhead};
+use super::{
+    DisplayOption, card, field,
+    settings::{choice, setting_switch},
+    subhead,
+};
 
 #[derive(Default)]
 pub(super) struct Editor {
@@ -22,34 +26,39 @@ impl Editor {
     ) {
         card(ui, |ui| {
             subhead(ui, "位置与大小");
+            choice(
+                ui,
+                "停靠边",
+                &mut settings.dock.edge,
+                [
+                    (DockEdge::Left, "左侧"),
+                    (DockEdge::Top, "顶部"),
+                    (DockEdge::Right, "右侧"),
+                    (DockEdge::Bottom, "底部"),
+                ],
+            );
             Grid::new("capsule-geometry")
-                .spacing([16.0, 10.0])
+                .spacing([16.0, 8.0])
                 .show(ui, |ui| {
-                    ui.label("停靠边");
-                    ui.horizontal_wrapped(|ui| {
-                        for (edge, label) in [
-                            (DockEdge::Left, "左侧"),
-                            (DockEdge::Top, "顶部"),
-                            (DockEdge::Right, "右侧"),
-                            (DockEdge::Bottom, "底部"),
-                        ] {
-                            ui.selectable_value(&mut settings.dock.edge, edge, label);
-                        }
-                    });
+                    let label = ui.label("大小");
+                    settings_slider(
+                        ui,
+                        egui::Slider::new(&mut settings.dock.scale, 80..=140).suffix("%"),
+                    )
+                    .labelled_by(label.id);
                     ui.end_row();
-                    ui.label("大小");
-                    ui.add(egui::Slider::new(&mut settings.dock.scale, 80..=140).suffix("%"));
-                    ui.end_row();
-                    ui.label(if settings.dock.edge.is_horizontal() {
+                    let label = ui.label(if settings.dock.edge.is_horizontal() {
                         "水平位置"
                     } else {
                         "垂直位置"
                     });
-                    ui.horizontal(|ui| {
-                        ui.add(
+                    ui.horizontal_wrapped(|ui| {
+                        settings_slider(
+                            ui,
                             egui::Slider::new(&mut settings.dock.offset, -100..=100)
                                 .show_value(false),
-                        );
+                        )
+                        .labelled_by(label.id);
                         if ui
                             .add_enabled(settings.dock.offset != 0, Button::new("居中"))
                             .clicked()
@@ -66,11 +75,13 @@ impl Editor {
                 });
             ui.add_space(4.0);
             ui.weak("按住 Ctrl 拖动收起的胶囊，可换边或移到其他显示器。");
-            ui.checkbox(
+            setting_switch(
+                ui,
                 &mut settings.dock.oled_shift,
                 "收起时沿边缘轻微移动（OLED 像素偏移）",
             );
-            ui.checkbox(
+            setting_switch(
+                ui,
                 &mut settings.dock.exclude_from_capture,
                 "在截图和录屏中隐藏胶囊",
             )
@@ -78,31 +89,28 @@ impl Editor {
         });
         card(ui, |ui| {
             subhead(ui, "胶囊显示");
-            ui.horizontal_wrapped(|ui| {
-                ui.label("皮肤");
-                for (skin, name) in CapsuleSkin::ALL {
-                    ui.selectable_value(&mut settings.dock.skin, skin, name);
-                }
-            });
-            ui.horizontal_wrapped(|ui| {
-                ui.label("形态");
-                ui.selectable_value(&mut settings.dock.shape, CapsuleShape::Pill, "胶囊");
-                ui.selectable_value(&mut settings.dock.shape, CapsuleShape::Notch, "刘海");
-            });
+            choice(ui, "皮肤", &mut settings.dock.skin, CapsuleSkin::ALL);
+            choice(
+                ui,
+                "形态",
+                &mut settings.dock.shape,
+                [(CapsuleShape::Pill, "胶囊"), (CapsuleShape::Notch, "刘海")],
+            );
             if settings.dock.skin == CapsuleSkin::Cloud {
                 ui.weak("随当前专辑封面取色，指针移动时光晕随之移动。");
             }
-            ui.checkbox(&mut settings.dock.companion, "收起时显示猫咪伙伴");
-            ui.checkbox(&mut settings.dock.minimal, "极简模式");
+            setting_switch(ui, &mut settings.dock.companion, "收起时显示猫咪伙伴");
+            setting_switch(ui, &mut settings.dock.minimal, "极简模式");
             if !settings.dock.skin.glass() {
-                ui.checkbox(&mut settings.dock.translucent, "半透明胶囊");
+                setting_switch(ui, &mut settings.dock.translucent, "半透明胶囊");
             }
-            ui.horizontal(|ui| {
-                ui.label("时钟");
-                ui.selectable_value(&mut settings.dock.clock_24h, true, "24 小时制");
-                ui.selectable_value(&mut settings.dock.clock_24h, false, "12 小时制");
-            });
-            ui.checkbox(&mut settings.dock.top_lyrics, "顶部收起时显示一行歌词");
+            choice(
+                ui,
+                "时钟",
+                &mut settings.dock.clock_24h,
+                [(true, "24 小时制"), (false, "12 小时制")],
+            );
+            setting_switch(ui, &mut settings.dock.top_lyrics, "顶部收起时显示一行歌词");
         });
         card(ui, |ui| {
             subhead(ui, "横向常驻组件顺序");
@@ -121,8 +129,8 @@ impl Editor {
 
     pub(super) fn avoidance(&mut self, ui: &mut Ui, dock: &mut DockSettings) {
         subhead(ui, "自动避让");
-        ui.checkbox(&mut dock.avoid_browsers, "浏览器遮盖时收成贴边细线");
-        ui.checkbox(&mut dock.hide_fullscreen, "前台应用全屏时隐藏");
+        setting_switch(ui, &mut dock.avoid_browsers, "浏览器遮盖时收成贴边细线");
+        setting_switch(ui, &mut dock.hide_fullscreen, "前台应用全屏时隐藏");
         for (index, app) in dock.avoid_apps.iter().enumerate() {
             let remove = ui
                 .push_id(index, |ui| {
@@ -192,6 +200,26 @@ impl Editor {
         self.app_name.clear();
         self.app_error = None;
     }
+}
+
+fn settings_slider(ui: &mut Ui, slider: egui::Slider<'_>) -> egui::Response {
+    ui.scope(|ui| {
+        let style = ui.style_mut();
+        let visuals = &mut style.visuals;
+        let track = visuals.weak_text_color().gamma_multiply(0.55);
+        let accent = visuals.hyperlink_color;
+        visuals.widgets.inactive.bg_fill = track;
+        visuals.widgets.hovered.bg_fill = track;
+        visuals.widgets.active.bg_fill = track;
+        visuals.selection.bg_fill = accent;
+        style.spacing.slider_rail_height = 4.0;
+        ui.add(
+            slider
+                .trailing_fill(true)
+                .handle_shape(egui::style::HandleShape::Circle),
+        )
+    })
+    .inner
 }
 
 fn display_selector(ui: &mut Ui, selected: &mut Option<String>, displays: &[DisplayOption]) {

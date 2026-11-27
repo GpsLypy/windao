@@ -33,6 +33,25 @@ pub(crate) fn market_feed(url: &Url) -> Result<String> {
 }
 
 #[cfg(windows)]
+pub(crate) fn news_feed() -> Result<String> {
+    let url = Url::parse("https://www.ithome.com/rss/").expect("fixed RSS address");
+    let response = http::Http::open()?.request_accept(
+        Request {
+            method: "GET",
+            url: &url,
+            authorization: None,
+            depth: None,
+            body: "",
+        },
+        "application/rss+xml, application/xml, text/xml",
+    )?;
+    if response.status != 200 {
+        return Err(format!("资讯来源返回 HTTP {}。", response.status));
+    }
+    Ok(response.body)
+}
+
+#[cfg(windows)]
 pub(crate) fn get_json(url: &Url) -> Result<(u16, String)> {
     get_json_response(url, None)
 }

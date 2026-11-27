@@ -4,12 +4,11 @@ use eframe::egui::{
 };
 
 use super::{Page, skin::Palette};
+use crate::ui::controls;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Entry {
     Page(Page),
-    #[cfg(windows)]
-    Calculator,
     DesktopTodo,
 }
 
@@ -26,6 +25,7 @@ const GROUPS: &[(&str, &[Entry])] = &[
             #[cfg(windows)]
             Open(Page::Mailbox),
             Open(Page::Tasks),
+            Open(Page::Today),
             Entry::DesktopTodo,
             Open(Page::Focus),
             Open(Page::AiUsage),
@@ -44,6 +44,7 @@ const GROUPS: &[(&str, &[Entry])] = &[
             Open(Page::Music),
             #[cfg(windows)]
             Open(Page::Translation),
+            Open(Page::News),
             Open(Page::Notifications),
         ],
     ),
@@ -52,8 +53,7 @@ const GROUPS: &[(&str, &[Entry])] = &[
         &[
             #[cfg(windows)]
             Open(Page::Market),
-            #[cfg(windows)]
-            Entry::Calculator,
+            Open(Page::Calculator),
             #[cfg(windows)]
             Open(Page::Developer),
             #[cfg(windows)]
@@ -71,8 +71,6 @@ impl Entry {
     fn label(self) -> &'static str {
         match self {
             Open(page) => page.title(),
-            #[cfg(windows)]
-            Self::Calculator => "计算器",
             Self::DesktopTodo => "桌面待办",
         }
     }
@@ -86,8 +84,7 @@ impl Entry {
             Open(Page::Notes) => Some((Key::Num4, "Ctrl+4")),
             #[cfg(windows)]
             Open(Page::Music) => Some((Key::Num5, "Ctrl+5")),
-            #[cfg(windows)]
-            Self::Calculator => Some((Key::Num6, "Ctrl+6")),
+            Open(Page::Calculator) => Some((Key::Num6, "Ctrl+6")),
             #[cfg(windows)]
             Open(Page::Clipboard) => Some((Key::Num7, "Ctrl+7")),
             Open(Page::Focus) => Some((Key::Num8, "Ctrl+8")),
@@ -126,37 +123,16 @@ impl Entry {
                     stroke,
                 );
             }
-            #[cfg(windows)]
-            Self::Calculator => {
-                let p = ui.painter();
-                let stroke = Stroke::new(1.4 * s, color);
-                p.rect_stroke(
-                    egui::Rect::from_center_size(center, vec2(13.0, 16.0) * s),
-                    2,
-                    stroke,
-                    StrokeKind::Inside,
-                );
-                p.line_segment(
-                    [center + vec2(-4.0, -2.0) * s, center + vec2(4.0, -2.0) * s],
-                    stroke,
-                );
-                for x in [-2.5, 2.5] {
-                    for y in [1.0, 4.0] {
-                        p.circle_filled(center + vec2(x, y) * s, 0.9 * s, color);
-                    }
-                }
-            }
         }
     }
 }
 
 fn enabled(entry: Entry, inline_pages: &[Page]) -> bool {
     match entry {
-        Open(page @ (Page::Calendar | Page::Today | Page::Tasks | Page::Notes | Page::Focus)) => {
-            inline_pages.contains(&page)
-        }
+        Open(Page::Notifications | Page::Dates) => true,
         #[cfg(windows)]
-        Open(Page::Music) => inline_pages.contains(&Page::Music),
+        Open(Page::Mailbox | Page::Wireless) => true,
+        Open(page) => inline_pages.contains(&page),
         _ => true,
     }
 }
@@ -169,26 +145,7 @@ fn row(ui: &mut Ui, entry: Entry, active: bool, scale: f32) -> bool {
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, text)
     });
-    let hot = response.hovered() || response.has_focus();
-    ui.painter().rect_filled(
-        rect,
-        (15.0 * scale) as u8,
-        if active {
-            tone.selected
-        } else if hot {
-            tone.border
-        } else {
-            tone.card
-        },
-    );
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect,
-            (15.0 * scale) as u8,
-            Stroke::new(scale, tone.signal),
-            StrokeKind::Inside,
-        );
-    }
+    controls::navigation_background(ui, &response, active, scale);
     let center = rect.center();
     entry.icon(
         ui,
@@ -242,8 +199,7 @@ pub(super) fn show(
             .add_sized(
                 vec2(78.0, 28.0) * s,
                 egui::Button::new(RichText::new("退出应用").size(12.0 * s))
-                    .fill(tone.card)
-                    .corner_radius((14.0 * s) as u8),
+                    .corner_radius((5.0 * s).round() as u8),
             )
             .clicked()
         {

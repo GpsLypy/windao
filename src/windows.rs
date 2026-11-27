@@ -13,9 +13,9 @@ use windows_sys::Win32::Foundation::{
     GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateRectRgn, CreateRoundRectRgn, DISPLAY_DEVICE_ACTIVE, DISPLAY_DEVICEW, DeleteObject,
-    EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
-    MONITORINFOEXW, SetWindowRgn,
+    CreatePolygonRgn, CreateRectRgn, CreateRoundRectRgn, DISPLAY_DEVICE_ACTIVE, DISPLAY_DEVICEW,
+    DeleteObject, EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
+    MONITORINFO, MONITORINFOEXW, SetWindowRgn, WINDING,
 };
 use windows_sys::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint};
 use windows_sys::Win32::System::Com::{
@@ -430,14 +430,12 @@ pub fn reveal_local_path(path: &Path) -> io::Result<()> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SystemTool {
-    Calculator,
     ScreenCapture,
 }
 
 impl SystemTool {
     pub fn open(self) -> Result<(), String> {
         let (uri, name) = match self {
-            Self::Calculator => (w!("calculator:"), "计算器"),
             Self::ScreenCapture => (w!("ms-screenclip:"), "截图工具"),
         };
         let result = unsafe {
@@ -630,6 +628,7 @@ struct Region {
     right: i32,
     bottom: i32,
     diameter: i32,
+    shoulder: Option<i32>,
     flat_edge: Option<DockEdge>,
 }
 
@@ -723,6 +722,32 @@ impl Shell {
 
     pub fn displays(&self) -> Vec<Display> {
         self.displays.clone()
+    }
+
+    pub fn desktop_todo_bubble_position(
+        &self,
+        saved: Option<[i32; 2]>,
+        diameter: f32,
+    ) -> Option<[i32; 2]> {
+        let previous = saved.and_then(|[x, y]| {
+            self.displays.iter().find(|display| {
+                let r = display.bounds;
+                x >= r.left && x < r.right && y >= r.top && y < r.bottom
+            })
+        });
+        let display = previous
+            .or_else(|| self.displays.iter().find(|display| display.primary))
+            .or_else(|| self.displays.first())?;
+        let scale = monitor_dpi(display.monitor, self.hwnd) as f32 / 96.0;
+        let r = display.work_area;
+        let size = (diameter * scale).ceil() as i32;
+        let margin = (18.0 * scale).round() as i32;
+        let right = (r.right - size).max(r.left);
+        let bottom = (r.bottom - size).max(r.top);
+        let [x, y] = saved
+            .filter(|_| previous.is_some())
+            .unwrap_or([right - margin, bottom - margin]);
+        Some([x.clamp(r.left, right), y.clamp(r.top, bottom)])
     }
 
     pub fn desktop_todo_placement(
@@ -972,6 +997,7 @@ impl Shell {
                 right: 0,
                 bottom: 0,
                 diameter: 0,
+                shoulder: None,
                 flat_edge: None,
             });
         } else if let Some(region) = self.region {
@@ -1069,6 +1095,7 @@ impl Shell {
                     bottom: top + height,
                     flat_edge: self.flat_edge,
                     diameter: rescale(previous.diameter).clamp(1, width.min(height)),
+                    shoulder: previous.shoulder.map(rescale),
                 }
             }
             _ => Region {
@@ -1076,6 +1103,7 @@ impl Shell {
                 top: 0,
                 right: host.width,
                 bottom: host.height,
+                shoulder: None,
                 flat_edge: self.flat_edge,
                 diameter: ((radius * host.dpi as f32 / 48.0).round() as i32)
                     .clamp(1, host.width.min(host.height)),
@@ -1084,7 +1112,13 @@ impl Shell {
         self.set_region(region);
     }
 
-    pub fn update_region(&mut self, rect: egui::Rect, radius: f32, pixels_per_point: f32) {
+    pub fn update_region(
+        &mut self,
+        rect: egui::Rect,
+        radius: f32,
+        shoulder: Option<f32>,
+        pixels_per_point: f32,
+    ) {
         if !rect.is_finite()
             || !rect.is_positive()
             || !pixels_per_point.is_finite()
@@ -1108,6 +1142,7 @@ impl Shell {
             bottom,
             flat_edge: self.flat_edge,
             diameter: diameter.clamp(1, span),
+            shoulder: shoulder.map(|flare| (flare * pixels_per_point).round() as i32),
         };
         self.set_region(bounds);
     }
@@ -1158,6 +1193,23 @@ impl Shell {
         unsafe {
             let region = if bounds.diameter == 0 {
                 CreateRectRgn(0, 0, 0, 0)
+            } else if let Some(shoulder) = bounds.shoulder {
+                let rect = egui::Rect::from_min_max(
+                    egui::pos2(bounds.left as f32, bounds.top as f32),
+                    egui::pos2(bounds.right as f32, bounds.bottom as f32),
+                );
+                let rows = crate::ui::capsule::silhouette::rows(
+                    rect,
+                    shoulder as f32,
+                    bounds.diameter as f32 / 2.0,
+                );
+                let points: Vec<_> = crate::ui::capsule::silhouette::perimeter(&rows)
+                    .map(|point| POINT {
+                        x: point.x.round() as i32,
+                        y: point.y.round() as i32,
+                    })
+                    .collect();
+                CreatePolygonRgn(points.as_ptr(), points.len() as i32, WINDING)
             } else {
                 CreateRoundRectRgn(
                     bounds.left,
@@ -1171,7 +1223,9 @@ impl Shell {
             if region.is_null() {
                 return;
             }
-            if let Some(edge) = bounds.flat_edge {
+            if bounds.shoulder.is_none()
+                && let Some(edge) = bounds.flat_edge
+            {
                 let (mut l, mut t, mut r, mut b) =
                     (bounds.left, bounds.top, bounds.right, bounds.bottom);
                 let radius = (bounds.diameter + 1) / 2;

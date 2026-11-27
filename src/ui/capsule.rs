@@ -7,16 +7,19 @@ use eframe::egui::{
 };
 
 use crate::{
-    dock::{CapsuleSkin, DockEdge, DockSettings, Resident},
+    dock::{CapsuleShape, CapsuleSkin, DockEdge, DockSettings, Resident},
     workspace::{Focus, Store, Task, TaskStatus, Workspace},
 };
 
-use super::{CapsuleFrame, Page, ShellAction, calendar, focus};
+#[cfg(windows)]
+use super::FeatureSources;
+use super::{CapsuleFrame, Page, ShellAction, Workbench, calendar, focus};
 
 mod companion;
 mod launcher;
 mod resident;
 
+pub(crate) mod silhouette;
 mod skin;
 use skin::Palette;
 
@@ -55,6 +58,11 @@ pub(crate) struct CapsuleState {
 }
 
 impl CapsuleState {
+    #[cfg(windows)]
+    pub(crate) fn shows_authenticator(&self) -> bool {
+        self.active == Some(Page::Authenticator) && !self.library_open
+    }
+
     #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn open_home(&mut self) {
         self.active = None;
@@ -137,16 +145,18 @@ pub(crate) fn avoidance_size(dock: &DockSettings) -> Vec2 {
 
 pub(crate) fn draw(
     root: &mut Ui,
-    store: &Store,
+    store: &mut Store,
     state: &mut CapsuleState,
     options: CapsuleOptions<'_>,
-    #[cfg(windows)] media: &mut crate::music::Media,
+    workbench: &mut Workbench,
+    #[cfg(windows)] sources: &mut FeatureSources,
 ) -> CapsuleFrame {
     if options.hidden {
         return CapsuleFrame {
             action: None,
             rect: Rect::NOTHING,
             radius: 0,
+            shoulder: None,
         };
     }
     let ctx = root.ctx().clone();
@@ -158,7 +168,7 @@ pub(crate) fn draw(
         egui::Theme::Dark
     }));
     #[cfg(windows)]
-    let cover = match media.status() {
+    let cover = match sources.media.status() {
         crate::music::Status::Ready(track) if dock.skin == CapsuleSkin::Cloud => {
             track.artwork.as_deref().and_then(skin::cover_color)
         }
@@ -190,10 +200,23 @@ pub(crate) fn draw(
                 rect.width().min(rect.height()).div_euclid(2.0).max(1.0),
             ) as u8
     };
+    let shoulder =
+        (!options.avoiding && options.dock == DockEdge::Top && progress > 0.0).then(|| {
+            let start = if dock.shape == CapsuleShape::Pill {
+                -f32::from(radius)
+            } else {
+                0.0
+            };
+            let end = (28.0 * options.scale)
+                .min(rect.width() / 4.0)
+                .min(rect.height() / 3.0);
+            egui::lerp(start..=end, progress)
+        });
     let mut frame = CapsuleFrame {
         action: None,
         rect,
         radius,
+        shoulder,
     };
     if options.avoiding {
         let strip = root.interact(rect, Id::new("capsule-edge-strip"), egui::Sense::click());
@@ -224,21 +247,50 @@ pub(crate) fn draw(
         tone.surface.b(),
         alpha,
     );
-    root.painter().rect(
-        rect,
-        corners,
-        fill,
-        Stroke::new(0.6_f32, tone.border),
-        StrokeKind::Inside,
-    );
+    let border = Stroke::new(0.6_f32, tone.border);
+    let mut body = rect;
+    if let Some(shoulder) = shoulder {
+        silhouette::paint(
+            root.painter(),
+            rect,
+            shoulder,
+            f32::from(radius),
+            fill,
+            border,
+        );
+        let inset = shoulder.max(0.0);
+        body.min.x += inset;
+        body.max.x -= inset;
+    } else {
+        root.painter()
+            .rect(rect, corners, fill, border, StrokeKind::Inside);
+    }
     if dock.skin == CapsuleSkin::Cloud {
         let pointer = (!options.reduce_motion)
             .then(|| ctx.pointer_hover_pos())
             .flatten();
-        skin::cloud_glow(root.painter(), rect, corners, pointer, tone.signal);
+        if let Some(shoulder) = shoulder {
+            let top_radius = (-shoulder).max(0.0).round() as u8;
+            let glow_corners = egui::CornerRadius {
+                nw: top_radius,
+                ne: top_radius,
+                sw: radius,
+                se: radius,
+            };
+            skin::cloud_glow(
+                root.painter(),
+                body,
+                glow_corners,
+                pointer,
+                tone.signal,
+                false,
+            );
+        } else {
+            skin::cloud_glow(root.painter(), rect, corners, pointer, tone.signal, true);
+        }
     }
     if options.expanded && progress > 0.68 {
-        let content = rect.shrink(14.0 * options.scale);
+        let content = body.shrink(14.0 * options.scale);
         if content.is_positive() {
             root.scope_builder(UiBuilder::new().max_rect(content), |ui| {
                 ui.set_clip_rect(ui.clip_rect().intersect(content));
@@ -246,17 +298,18 @@ pub(crate) fn draw(
                 scale_style(ui, options.scale);
                 frame.action = expanded_content(
                     ui,
-                    store.state(),
+                    store,
                     state,
                     &options,
+                    workbench,
                     #[cfg(windows)]
-                    media,
+                    sources,
                 );
             });
         }
     } else if !options.expanded && progress <= 0.06 {
         #[cfg(windows)]
-        let playing = matches!(media.status(),crate::music::Status::Ready(track) if track.state==crate::music::PlaybackState::Playing);
+        let playing = matches!(sources.media.status(),crate::music::Status::Ready(track) if track.state==crate::music::PlaybackState::Playing);
         #[cfg(not(windows))]
         let playing = false;
         let slots = resident::layout(rect, store, state, &options);
@@ -714,16 +767,19 @@ fn scale_style(ui: &mut Ui, scale: f32) {
 
 fn expanded_content(
     ui: &mut Ui,
-    workspace: &Workspace,
+    store: &mut Store,
     state: &mut CapsuleState,
     options: &CapsuleOptions<'_>,
-    #[cfg(windows)] media: &mut crate::music::Media,
+    workbench: &mut Workbench,
+    #[cfg(windows)] sources: &mut FeatureSources,
 ) -> Option<ShellAction> {
     let tone = Palette::from_ui(ui);
     let s = options.scale;
     let now = Local::now();
     let date = now.date_naive();
     let mut action = None;
+    #[cfg(windows)]
+    let was_authenticator = state.active == Some(Page::Authenticator);
     if state
         .active
         .is_none_or(|page| !options.pages.contains(&page))
@@ -734,11 +790,23 @@ fn expanded_content(
             options.pages.first().copied()
         };
     }
-    // Keep the switcher anchored while long notes or agendas scroll above it.
+    // Keep full-size targets in the bottom dock even on a side-docked capsule.
     let pages = options.pages;
-    let dock_pages = if state.library_open { &[] } else { pages };
-    let slot = (ui.available_width() / dock_pages.len().max(1) as f32).min(40.0 * s);
-    let dock_size = vec2(slot * dock_pages.len() as f32 + 6.0 * s, 34.0 * s);
+    let max_slots = ((ui.max_rect().width() / s - 6.0) / 36.0).floor().max(1.0) as usize;
+    let overflow = pages.len() > max_slots;
+    let visible_count = if overflow { max_slots - 1 } else { pages.len() };
+    let mut visible = pages[..visible_count].to_vec();
+    if let Some(active) = state.active
+        && !visible.contains(&active)
+        && let Some(last) = visible.last_mut()
+        && visible_count > 1
+    {
+        *last = active;
+    }
+    let slots = visible.len() + usize::from(overflow);
+    let slot = (ui.max_rect().width() - 6.0 * s).max(1.0) / slots.max(1) as f32;
+    let slot = slot.min(40.0 * s);
+    let dock_size = vec2(slot * slots as f32 + 6.0 * s, 34.0 * s);
     let dock_rect = Rect::from_center_size(
         pos2(
             ui.max_rect().center().x,
@@ -746,7 +814,7 @@ fn expanded_content(
         ),
         dock_size,
     );
-    if !dock_pages.is_empty() {
+    if !state.library_open && slots > 0 {
         ui.painter().rect(
             dock_rect,
             (17.0 * s) as u8,
@@ -754,52 +822,64 @@ fn expanded_content(
             Stroke::new(0.8_f32, tone.border),
             StrokeKind::Inside,
         );
-    }
-    for (index, &page) in dock_pages.iter().enumerate() {
-        let center = pos2(
-            dock_rect.left() + 3.0 * s + (index as f32 + 0.5) * slot,
-            dock_rect.center().y,
-        );
-        let target = Rect::from_center_size(center, vec2(slot, dock_size.y));
-        let response = ui.interact(
-            target,
-            ui.id().with(("activity-dock", page.title())),
-            egui::Sense::click(),
-        );
-        let selected = state.active == Some(page);
-        response.widget_info(|| {
-            egui::WidgetInfo::selected(
-                egui::WidgetType::SelectableLabel,
-                true,
-                selected,
-                page.title(),
-            )
-        });
-        if selected || response.hovered() || response.has_focus() {
-            let chip = Rect::from_center_size(center, vec2(28.0, 28.0) * s);
-            ui.painter().rect_filled(
-                chip,
-                (14.0 * s) as u8,
-                if selected { tone.selected } else { tone.border },
+        for (index, page) in visible
+            .into_iter()
+            .map(Some)
+            .chain(overflow.then_some(None))
+            .enumerate()
+        {
+            let center = pos2(
+                dock_rect.left() + 3.0 * s + (index as f32 + 0.5) * slot,
+                dock_rect.center().y,
             );
-            if response.has_focus() {
-                ui.painter().rect_stroke(
+            let label = page.map_or("更多功能", Page::title);
+            let response = ui.interact(
+                Rect::from_center_size(center, vec2(slot, dock_size.y)),
+                ui.id().with(("activity-dock", label)),
+                egui::Sense::click(),
+            );
+            let selected = page.is_some() && state.active == page;
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label)
+            });
+            if selected || response.hovered() || response.has_focus() {
+                let chip = Rect::from_center_size(center, vec2(28.0, 28.0) * s);
+                ui.painter().rect_filled(
                     chip,
                     (14.0 * s) as u8,
-                    Stroke::new(1.0_f32, tone.ink),
-                    StrokeKind::Inside,
+                    if selected { tone.selected } else { tone.border },
                 );
+                if response.has_focus() {
+                    ui.painter().rect_stroke(
+                        chip,
+                        (14.0 * s) as u8,
+                        Stroke::new(1.0_f32, tone.ink),
+                        StrokeKind::Inside,
+                    );
+                }
             }
-        }
-        super::navigation::draw_icon(
-            ui,
-            page,
-            center,
-            if selected { tone.signal } else { tone.caption },
-            s,
-        );
-        if response.on_hover_text(page.title()).clicked() {
-            state.active = Some(page);
+            if let Some(page) = page {
+                super::navigation::draw_icon(
+                    ui,
+                    page,
+                    center,
+                    if selected { tone.signal } else { tone.caption },
+                    s,
+                );
+            } else {
+                for dx in [-5.0, 0.0, 5.0] {
+                    ui.painter()
+                        .circle_filled(center + vec2(dx * s, 0.0), 1.2 * s, tone.caption);
+                }
+            }
+            if response.on_hover_text(label).clicked() {
+                if let Some(page) = page {
+                    state.active = Some(page);
+                } else {
+                    state.library_open = true;
+                    state.library_query.clear();
+                }
+            }
         }
     }
     ui.horizontal(|ui| {
@@ -923,6 +1003,10 @@ fn expanded_content(
         caption(ui, error, 12.0 * s, ui.visuals().error_fg_color, false);
     }
 
+    #[cfg(windows)]
+    if was_authenticator && (state.library_open || state.active != Some(Page::Authenticator)) {
+        workbench.lock_authenticator();
+    }
     if state.library_open {
         match launcher::show(ui, &mut state.library_query, state.active, pages, s) {
             Some(launcher::Entry::Page(page)) if pages.contains(&page) => {
@@ -932,12 +1016,6 @@ fn expanded_content(
             }
             Some(launcher::Entry::Page(page)) => action = Some(ShellAction::OpenWorkbench(page)),
             Some(launcher::Entry::DesktopTodo) => action = Some(ShellAction::ShowDesktopTodo),
-            #[cfg(windows)]
-            Some(launcher::Entry::Calculator) => {
-                action = Some(ShellAction::LaunchSystem(
-                    crate::windows::SystemTool::Calculator,
-                ))
-            }
             None => {}
         }
         return action;
@@ -955,6 +1033,7 @@ fn expanded_content(
         .max_height((dock_rect.top() - ui.cursor().top() - 8.0 * s).max(0.0))
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            let workspace = store.state();
             if page == Page::Calendar {
                 let selected = state.calendar.selected_date();
                 let agenda = |ui: &mut Ui| {
@@ -1041,7 +1120,7 @@ fn expanded_content(
                     task_rows(ui, &tasks, 6, s, &mut action);
                 }),
                 #[cfg(windows)]
-                Page::Music => state.player.capsule(ui, media, s),
+                Page::Music => state.player.capsule(ui, &mut sources.media, s),
                 Page::Focus => {
                     let timer = &workspace.focus;
                     let seconds = timer.seconds_left(now.timestamp_millis());
@@ -1114,7 +1193,14 @@ fn expanded_content(
                         ui.label(RichText::new(preview).color(tone.ink).size(14.0 * s));
                     }
                 }),
-                _ => {}
+                Page::Calendar | Page::Settings => unreachable!("handled outside panel content"),
+                _ => workbench.render_page(
+                    page,
+                    ui,
+                    store,
+                    #[cfg(windows)]
+                    sources,
+                ),
             }
         });
     action
@@ -1131,29 +1217,23 @@ fn toolbar_button(
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(28.0 * scale), egui::Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     let p = ui.painter();
-    let hovered = response.hovered() || response.has_focus();
-    let fill = if selected {
-        tone.selected
-    } else if hovered {
-        tone.border
-    } else {
-        tone.card
-    };
+    let hover = response.hovered() || response.has_focus();
+    super::controls::navigation_background(ui, &response, false, scale);
+    if selected {
+        p.rect_filled(
+            rect.shrink(2.0 * scale),
+            (5.0 * scale).round() as u8,
+            tone.selected,
+        );
+        super::controls::focus_outline(ui, &response, (5.0 * scale).round() as u8, tone.ink, scale);
+    }
     let ink = if selected {
         tone.signal
-    } else if hovered {
+    } else if hover {
         tone.ink
     } else {
         tone.caption
     };
-    p.circle_filled(rect.center(), rect.width() / 2.0, fill);
-    if response.has_focus() {
-        p.circle_stroke(
-            rect.center(),
-            rect.width() / 2.0 - scale,
-            Stroke::new(scale, tone.signal),
-        );
-    }
     draw_icon(p, rect.center(), Stroke::new(1.5 * scale, ink));
     response.on_hover_text(label).clicked()
 }
@@ -1497,8 +1577,8 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let dock = &store.state().settings.dock;
-        let size = compact_with_weather(compact_size(&store, dock, None), dock, true, true);
+        let dock = store.state().settings.dock.clone();
+        let size = compact_with_weather(compact_size(&store, &dock, None), &dock, true, true);
         let screen = Rect::from_min_size(Pos2::ZERO, size);
         let mut state = CapsuleState {
             alert_count: 2,
@@ -1506,8 +1586,9 @@ mod tests {
             weather_caption: Some("22°".into()),
             ..Default::default()
         };
+        let mut workbench = Workbench::default();
         #[cfg(windows)]
-        let mut media = crate::music::Media::new(ctx.clone());
+        let mut sources = FeatureSources::new(ctx.clone());
         let mut render = |events| {
             let mut action = None;
             let output = ctx.run_ui(
@@ -1519,7 +1600,7 @@ mod tests {
                 |ui| {
                     action = draw(
                         ui,
-                        &store,
+                        &mut store,
                         &mut state,
                         CapsuleOptions {
                             dock: dock.edge,
@@ -1536,8 +1617,9 @@ mod tests {
                             minimal: false,
                             pages: &[Page::Today],
                         },
+                        &mut workbench,
                         #[cfg(windows)]
-                        &mut media,
+                        &mut sources,
                     )
                     .action;
                 },
@@ -1590,13 +1672,14 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let dock = &store.state().settings.dock;
-        let size = avoidance_size(dock);
+        let dock = store.state().settings.dock.clone();
+        let size = avoidance_size(&dock);
         let screen = Rect::from_min_size(Pos2::ZERO, size);
         let pos = screen.center();
         let mut state = CapsuleState::default();
+        let mut workbench = Workbench::default();
         #[cfg(windows)]
-        let mut media = crate::music::Media::new(ctx.clone());
+        let mut sources = FeatureSources::new(ctx.clone());
         let mut render = |events, hidden| {
             let mut frame = None;
             let _ = ctx.run_ui(
@@ -1608,7 +1691,7 @@ mod tests {
                 |ui| {
                     frame = Some(draw(
                         ui,
-                        &store,
+                        &mut store,
                         &mut state,
                         CapsuleOptions {
                             dock: dock.edge,
@@ -1625,8 +1708,9 @@ mod tests {
                             minimal: false,
                             pages: &[Page::Today],
                         },
+                        &mut workbench,
                         #[cfg(windows)]
-                        &mut media,
+                        &mut sources,
                     ));
                 },
             );
@@ -1656,15 +1740,22 @@ mod tests {
     #[test]
     fn bottom_dock_switches_pages_over_a_long_scrollable_note() {
         let ctx = egui::Context::default();
-        let mut workspace = Workspace::default();
-        workspace.notes = "滚动便笺\n".repeat(160);
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(directory.path().into()).unwrap();
+        store
+            .update(|workspace| {
+                workspace.notes = "滚动便笺\n".repeat(160);
+                Ok(())
+            })
+            .unwrap();
         let screen = Rect::from_min_size(Pos2::ZERO, vec2(390.0, 496.0));
         let mut state = CapsuleState {
             active: Some(Page::Notes),
             ..Default::default()
         };
+        let mut workbench = Workbench::default();
         #[cfg(windows)]
-        let mut media = crate::music::Media::new(ctx.clone());
+        let mut sources = FeatureSources::new(ctx.clone());
         let mut render = |events| {
             let _ = ctx.run_ui(
                 egui::RawInput {
@@ -1675,7 +1766,7 @@ mod tests {
                 |ui| {
                     expanded_content(
                         ui,
-                        &workspace,
+                        &mut store,
                         &mut state,
                         &CapsuleOptions {
                             dock: DockEdge::Left,
@@ -1692,8 +1783,9 @@ mod tests {
                             minimal: false,
                             pages: &[Page::Notes, Page::Calendar],
                         },
+                        &mut workbench,
                         #[cfg(windows)]
-                        &mut media,
+                        &mut sources,
                     );
                 },
             );
@@ -1715,23 +1807,24 @@ mod tests {
     fn title_menu_opens_from_calendar_and_routes_shortcuts_and_workbench_rows() {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
-        let workspace = Workspace::default();
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(directory.path().into()).unwrap();
         let mut state = CapsuleState::default();
+        let mut workbench = Workbench::default();
         #[cfg(windows)]
-        let mut media = crate::music::Media::new(ctx.clone());
-        #[cfg_attr(not(windows), allow(unused_mut))]
-        let mut render = |state: &mut CapsuleState, events, pages: &[Page]| {
+        let mut sources = FeatureSources::new(ctx.clone());
+        let mut render = |state: &mut CapsuleState, events, pages: &[Page], width: f32| {
             let mut action = None;
             let output = ctx.run_ui(
                 egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(680.0, 318.0))),
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 318.0))),
                     events,
                     ..Default::default()
                 },
                 |ui| {
                     action = expanded_content(
                         ui,
-                        &workspace,
+                        &mut store,
                         state,
                         &CapsuleOptions {
                             dock: DockEdge::Top,
@@ -1748,15 +1841,22 @@ mod tests {
                             minimal: false,
                             pages,
                         },
+                        &mut workbench,
                         #[cfg(windows)]
-                        &mut media,
+                        &mut sources,
                     );
                 },
             );
             (output, action)
         };
-        let pages = &[Page::Today, Page::Calendar, Page::Notes];
-        let (output, _) = render(&mut state, vec![], pages);
+        let pages = &[
+            Page::Today,
+            Page::Calendar,
+            Page::Notes,
+            Page::Calculator,
+            Page::AiUsage,
+        ];
+        let (output, _) = render(&mut state, vec![], pages, 680.0);
         assert_eq!(state.active, Some(Page::Calendar));
         let bounds = |output: egui::FullOutput, label: &str| {
             let tree = output.platform_output.accesskit_update.unwrap();
@@ -1787,13 +1887,13 @@ mod tests {
             ]
         };
         let menu = bounds(output, "功能菜单");
-        render(&mut state, click(menu, true), pages);
-        render(&mut state, click(menu, false), pages);
+        render(&mut state, click(menu, true), pages, 680.0);
+        render(&mut state, click(menu, false), pages, 680.0);
         assert!(state.library_open);
-        let (output, _) = render(&mut state, vec![], pages);
+        let (output, _) = render(&mut state, vec![], pages, 680.0);
         let open = bounds(output, "通知");
-        render(&mut state, click(open, true), pages);
-        let (_, action) = render(&mut state, click(open, false), pages);
+        render(&mut state, click(open, true), pages, 680.0);
+        let (_, action) = render(&mut state, click(open, false), pages, 680.0);
         assert!(matches!(
             action,
             Some(ShellAction::OpenWorkbench(Page::Notifications))
@@ -1808,12 +1908,38 @@ mod tests {
                 modifiers: Modifiers::CTRL,
             }],
             pages,
+            680.0,
         );
         assert_eq!(state.active, Some(Page::Notes));
         assert!(!state.library_open);
         state.open_home();
-        render(&mut state, vec![], &[Page::Today, Page::Notes]);
+        render(&mut state, vec![], &[Page::Today, Page::Notes], 680.0);
         assert_eq!(state.active, Some(Page::Today));
+
+        state.open_home();
+        let (output, _) = render(&mut state, vec![], pages, 178.0);
+        let more = bounds(output, "更多功能");
+        assert!(more.x > 0.0 && more.x < 178.0);
+        render(&mut state, click(more, true), pages, 178.0);
+        render(&mut state, click(more, false), pages, 178.0);
+        assert!(state.library_open);
+        let (_, action) = render(
+            &mut state,
+            vec![egui::Event::Key {
+                key: egui::Key::Num6,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::CTRL,
+            }],
+            pages,
+            178.0,
+        );
+        assert!(action.is_none());
+        assert_eq!(state.active, Some(Page::Calculator));
+        assert!(!state.library_open);
+        let (output, _) = render(&mut state, vec![], pages, 390.0);
+        bounds(output, "计算");
     }
 
     #[test]

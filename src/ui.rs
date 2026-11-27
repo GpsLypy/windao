@@ -2,10 +2,11 @@ use std::{path::Path, sync::Arc};
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 use eframe::egui::{
-    self, Button, Color32, FontData, FontDefinitions, FontFamily, FontId, Frame, Margin, Rect,
-    RichText, ScrollArea, Stroke, StrokeKind, TextEdit, TextStyle, Ui, Visuals, vec2,
+    self, Color32, FontData, FontDefinitions, FontFamily, FontId, Frame, Margin, Rect, RichText,
+    ScrollArea, Stroke, StrokeKind, TextEdit, TextStyle, Ui, Visuals, vec2,
 };
 
+#[cfg(windows)]
 use crate::dock::CapsulePage;
 use crate::workspace::{Appearance, Store};
 
@@ -19,10 +20,12 @@ mod developer_tools;
 #[cfg(any(windows, test))]
 mod workbench_tools;
 
+mod calculator;
 mod calendar;
 pub(crate) mod capsule;
 #[cfg(windows)]
 mod clipboard;
+mod controls;
 mod dates;
 pub(crate) mod desktop_todo;
 mod dock_settings;
@@ -37,6 +40,8 @@ mod music;
 #[cfg(windows)]
 mod native_tools;
 mod navigation;
+#[cfg(any(windows, test))]
+mod news;
 mod notes_extra;
 #[cfg(any(windows, test))]
 mod plugins;
@@ -72,6 +77,8 @@ pub enum Page {
     #[cfg(windows)]
     Authenticator,
 
+    Calculator,
+    News,
     Calendar,
     Notifications,
     #[cfg(windows)]
@@ -105,6 +112,8 @@ impl Page {
     const ALL: &'static [Self] = &[
         Self::Today,
         Self::Calendar,
+        Self::Calculator,
+        Self::News,
         Self::Notifications,
         #[cfg(windows)]
         Self::Mailbox,
@@ -159,6 +168,8 @@ impl Page {
             #[cfg(windows)]
             Self::Authenticator => "身份验证器",
 
+            Self::Calculator => "计算器",
+            Self::News => "资讯",
             Self::Calendar => "日历",
             #[cfg(windows)]
             Self::Mailbox => "邮件",
@@ -190,18 +201,28 @@ impl Page {
     }
 }
 
+#[cfg(windows)]
 impl From<CapsulePage> for Page {
     fn from(page: CapsulePage) -> Self {
         match page {
             CapsulePage::Today => Self::Today,
             CapsulePage::Calendar => Self::Calendar,
             CapsulePage::Tasks => Self::Tasks,
-            #[cfg(windows)]
             CapsulePage::Music => Self::Music,
-            #[cfg(not(windows))]
-            CapsulePage::Music => Self::Today,
             CapsulePage::Focus => Self::Focus,
             CapsulePage::Notes => Self::Notes,
+            CapsulePage::Files => Self::Files,
+            CapsulePage::Clipboard => Self::Clipboard,
+            CapsulePage::Calculator => Self::Calculator,
+            CapsulePage::Capture => Self::Capture,
+            CapsulePage::AiWorkbench => Self::AiWorkbench,
+            CapsulePage::Market => Self::Market,
+            CapsulePage::Translation => Self::Translation,
+            CapsulePage::Developer => Self::Developer,
+            CapsulePage::Performance => Self::Performance,
+            CapsulePage::AiUsage => Self::AiUsage,
+            CapsulePage::Authenticator => Self::Authenticator,
+            CapsulePage::News => Self::News,
         }
     }
 }
@@ -214,8 +235,6 @@ pub enum ShellAction {
     SetPinned(bool),
     #[cfg_attr(not(windows), allow(dead_code))]
     OpenWorkbench(Page),
-    #[cfg(windows)]
-    LaunchSystem(crate::windows::SystemTool),
     #[cfg_attr(not(windows), allow(dead_code))]
     OpenCalendar(NaiveDate),
     #[cfg_attr(not(windows), allow(dead_code))]
@@ -258,6 +277,7 @@ pub struct CapsuleFrame {
     pub action: Option<ShellAction>,
     pub rect: Rect,
     pub radius: u8,
+    pub shoulder: Option<f32>,
 }
 
 pub(crate) fn request_quit(ctx: &egui::Context) {
@@ -368,49 +388,39 @@ fn style(style: &mut egui::Style) {
     } else {
         Visuals::light()
     };
-    if dark {
-        visuals.panel_fill = Color32::from_rgb(32, 33, 36);
-        visuals.window_fill = Color32::from_rgb(43, 44, 48);
-        visuals.faint_bg_color = Color32::from_rgb(36, 36, 40);
-        visuals.extreme_bg_color = Color32::from_rgb(20, 21, 23);
-        visuals.override_text_color = Some(Color32::from_rgb(245, 245, 247));
-        visuals.weak_text_color = Some(Color32::from_rgb(171, 175, 184));
-        visuals.widgets.noninteractive.bg_stroke =
-            Stroke::new(1.0_f32, Color32::from_rgb(70, 72, 78));
-        visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(51, 52, 55);
-        visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(64, 65, 68);
-    } else {
-        visuals.panel_fill = Color32::from_rgb(244, 245, 247);
-        visuals.window_fill = Color32::WHITE;
-        visuals.faint_bg_color = Color32::from_rgb(236, 238, 242);
-        visuals.extreme_bg_color = Color32::WHITE;
-        visuals.override_text_color = Some(Color32::from_rgb(32, 33, 36));
-        visuals.weak_text_color = Some(Color32::from_rgb(96, 100, 109));
-        visuals.widgets.noninteractive.bg_stroke =
-            Stroke::new(1.0_f32, Color32::from_rgb(218, 221, 227));
-    }
+    let gray =
+        |dark_value, light_value| Color32::from_gray(if dark { dark_value } else { light_value });
+    visuals.panel_fill = gray(32, 244);
+    visuals.window_fill = gray(41, 255);
+    visuals.faint_bg_color = gray(38, 239);
+    visuals.extreme_bg_color = gray(29, 255);
+    visuals.weak_text_color = Some(gray(178, 92));
     visuals.hyperlink_color = accent;
     visuals.selection.bg_fill = if dark {
-        Color32::from_rgb(46, 58, 74)
+        Color32::from_rgb(45, 63, 76)
     } else {
-        Color32::from_rgb(205, 222, 244)
+        Color32::from_rgb(220, 235, 246)
     };
-    visuals.selection.stroke = Stroke::new(1.5_f32, accent);
-    visuals.widgets.hovered.bg_stroke.color = accent;
-    visuals.widgets.active.bg_stroke.color = accent;
-    for widget in [
-        &mut visuals.widgets.inactive,
-        &mut visuals.widgets.hovered,
-        &mut visuals.widgets.active,
-        &mut visuals.widgets.open,
-        &mut visuals.widgets.noninteractive,
+    visuals.selection.stroke = Stroke::new(1.0_f32, accent);
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, gray(60, 228));
+    visuals.widgets.noninteractive.fg_stroke.color = gray(235, 32);
+    for (widget, fill, outline) in [
+        (&mut visuals.widgets.inactive, gray(50, 253), gray(76, 211)),
+        (&mut visuals.widgets.hovered, gray(60, 245), gray(91, 193)),
+        (&mut visuals.widgets.active, gray(45, 232), gray(218, 55)),
+        (&mut visuals.widgets.open, gray(50, 249), gray(91, 193)),
     ] {
-        widget.corner_radius = 8.into();
+        widget.bg_fill = fill;
+        widget.weak_bg_fill = fill;
+        widget.bg_stroke = Stroke::new(1.0_f32, outline);
+        widget.fg_stroke.color = gray(244, 29);
+        widget.expansion = 0.0;
+        widget.corner_radius = 5.into();
     }
     style.visuals = visuals;
     style.spacing.interact_size = vec2(44.0, 32.0);
-    style.spacing.item_spacing = vec2(8.0, 9.0);
-    style.spacing.button_padding = vec2(10.0, 5.0);
+    style.spacing.item_spacing = vec2(8.0, 10.0);
+    style.spacing.button_padding = vec2(12.0, 5.0);
     style.spacing.text_edit_width = 280.0;
     style
         .text_styles
@@ -431,30 +441,38 @@ fn style(style: &mut egui::Style) {
 
 fn accent(dark: bool) -> Color32 {
     if dark {
-        Color32::from_rgb(91, 141, 239)
+        Color32::from_rgb(117, 190, 239)
     } else {
-        Color32::from_rgb(0, 91, 198)
+        Color32::from_rgb(0, 96, 156)
     }
 }
 
 fn primary(ui: &mut Ui, label: &str) -> egui::Response {
-    let dark = ui.visuals().dark_mode;
-    let color = if dark {
-        Color32::from_gray(27)
-    } else {
-        Color32::WHITE
-    };
-    let response =
-        ui.add(Button::new(RichText::new(label).strong().color(color)).fill(accent(dark)));
-    if response.has_focus() || response.hovered() {
-        ui.painter().rect_stroke(
-            response.rect,
-            8,
-            Stroke::new(1.5_f32, accent(ui.visuals().dark_mode)),
-            StrokeKind::Inside,
-        );
-    }
-    response
+    ui.scope(|ui| {
+        let visuals = &mut ui.style_mut().visuals;
+        let dark = visuals.dark_mode;
+        let fill = accent(dark);
+        let ink = if dark {
+            Color32::from_gray(20)
+        } else {
+            Color32::WHITE
+        };
+        let hover = fill.lerp_to_gamma(ink, 0.10);
+        let pressed = fill.lerp_to_gamma(visuals.panel_fill, 0.13);
+        for (widget, background) in [
+            (&mut visuals.widgets.inactive, fill),
+            (&mut visuals.widgets.hovered, hover),
+            (&mut visuals.widgets.active, pressed),
+        ] {
+            widget.weak_bg_fill = background;
+            widget.fg_stroke.color = ink;
+            widget.bg_stroke = Stroke::NONE;
+        }
+        let response = ui.button(RichText::new(label).strong());
+        controls::focus_outline(ui, &response, 5, ink, 1.0);
+        response
+    })
+    .inner
 }
 
 fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
@@ -464,8 +482,8 @@ fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
             1.0_f32,
             ui.visuals().widgets.noninteractive.bg_stroke.color,
         ))
-        .corner_radius(14)
-        .inner_margin(Margin::same(20))
+        .corner_radius(8)
+        .inner_margin(Margin::same(16))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             content(ui);
@@ -524,6 +542,9 @@ fn field(ui: &mut Ui, label: &str, value: &mut String, hint: &str, max: usize) -
 #[derive(Default)]
 pub struct Workbench {
     pub page: Page,
+    calculator: calculator::Calculator,
+    #[cfg(windows)]
+    news: news::News,
     brand_icon: Option<egui::TextureHandle>,
     #[cfg(windows)]
     workbench_tools: workbench_tools::WorkbenchTools,
@@ -584,6 +605,11 @@ pub struct Workbench {
 }
 
 impl Workbench {
+    #[cfg(windows)]
+    pub(crate) fn lock_authenticator(&mut self) {
+        self.authenticator.lock();
+    }
+
     #[cfg(windows)]
     pub(crate) fn window_closed(&mut self) {
         self.authenticator.lock();
@@ -698,64 +724,89 @@ impl Workbench {
                 ScrollArea::vertical()
                     .auto_shrink([false; 2])
                     .id_salt(self.page.title())
-                    .show(ui, |ui| match self.page {
-                        Page::Today => self.today(ui, store),
-                        #[cfg(windows)]
-                        Page::AiWorkbench => self.workbench_tools.show_ai(ui, store),
-                        #[cfg(windows)]
-                        Page::Translation => self.workbench_tools.show_translation(ui),
-                        #[cfg(windows)]
-                        Page::Developer => self.developer.show(ui),
-                        #[cfg(windows)]
-                        Page::Authenticator => self.authenticator.show(ui, store.directory()),
-                        #[cfg(windows)]
-                        Page::Capture => self.capture.show(ui),
-
-                        Page::AiUsage => self.ai_meter.show(ui, store),
-                        Page::Calendar => self.calendar.show(
+                    .show(ui, |ui| {
+                        self.render_page(
+                            self.page,
                             ui,
                             store,
-                            &mut self.notice,
                             #[cfg(windows)]
-                            &mut sources.calendar,
-                        ),
-                        #[cfg(windows)]
-                        Page::Mailbox => self.mailbox.show(ui, store),
-                        Page::Notifications => self.notifications(ui, store),
-                        Page::Tasks => self.tasks.show(ui, store, &mut self.notice),
-                        #[cfg(windows)]
-                        Page::Music => self.player.show(ui, &mut sources.media, &mut self.notice),
-                        Page::Focus => self.focus.show(ui, store, &mut self.notice),
-                        Page::Notes => {
-                            self.extra_notes.tabs(ui);
-                            if self.extra_notes.tab == notes_extra::Tab::Quick {
-                                self.notes(ui, store);
-                            } else {
-                                self.extra_notes.draw(ui, store);
-                            }
-                        }
-                        Page::Dates => self.dates.show(ui, store, &mut self.notice),
-                        #[cfg(windows)]
-                        Page::Weather => self.weather.show(ui, store.directory()),
-                        #[cfg(windows)]
-                        Page::Tools => self.salary.show(ui, store.directory()),
-                        #[cfg(windows)]
-                        Page::Market => self.gold.show(ui, store.directory()),
-                        #[cfg(windows)]
-                        Page::Files => self.tools.render(ui, store.directory()),
-                        #[cfg(windows)]
-                        Page::Performance => self.performance.show(ui, store),
-                        #[cfg(windows)]
-                        Page::Clipboard => self.clipboard.show(ui, store.directory()),
-                        #[cfg(windows)]
-                        Page::Wireless => self.wireless.show(ui),
-                        #[cfg(windows)]
-                        Page::Plugins => self.plugins.show(ui, store.directory(), || {
-                            crate::windows::open_file(crate::windows::FileKind::Json)
-                        }),
-                        Page::Settings => unreachable!("settings own their category scroll area"),
+                            sources,
+                        )
                     });
             });
+    }
+
+    fn render_page(
+        &mut self,
+        page: Page,
+        ui: &mut Ui,
+        store: &mut Store,
+        #[cfg(windows)] sources: &mut FeatureSources,
+    ) {
+        match page {
+            Page::Calculator => self.calculator.show(ui),
+            #[cfg(windows)]
+            Page::News => self.news.show(ui),
+            #[cfg(not(windows))]
+            Page::News => {
+                ui.label("资讯需要 Windows 网络服务。");
+            }
+            Page::Today => self.today(ui, store),
+            #[cfg(windows)]
+            Page::AiWorkbench => self.workbench_tools.show_ai(ui, store),
+            #[cfg(windows)]
+            Page::Translation => self.workbench_tools.show_translation(ui),
+            #[cfg(windows)]
+            Page::Developer => self.developer.show(ui),
+            #[cfg(windows)]
+            Page::Authenticator => self.authenticator.show(ui, store.directory()),
+            #[cfg(windows)]
+            Page::Capture => self.capture.show(ui),
+
+            Page::AiUsage => self.ai_meter.show(ui, store),
+            Page::Calendar => self.calendar.show(
+                ui,
+                store,
+                &mut self.notice,
+                #[cfg(windows)]
+                &mut sources.calendar,
+            ),
+            #[cfg(windows)]
+            Page::Mailbox => self.mailbox.show(ui, store),
+            Page::Notifications => self.notifications(ui, store),
+            Page::Tasks => self.tasks.show(ui, store, &mut self.notice),
+            #[cfg(windows)]
+            Page::Music => self.player.show(ui, &mut sources.media, &mut self.notice),
+            Page::Focus => self.focus.show(ui, store, &mut self.notice),
+            Page::Notes => {
+                self.extra_notes.tabs(ui);
+                if self.extra_notes.tab == notes_extra::Tab::Quick {
+                    self.notes(ui, store);
+                } else {
+                    self.extra_notes.draw(ui, store);
+                }
+            }
+            Page::Dates => self.dates.show(ui, store, &mut self.notice),
+            #[cfg(windows)]
+            Page::Weather => self.weather.show(ui, store.directory()),
+            #[cfg(windows)]
+            Page::Tools => self.salary.show(ui, store.directory()),
+            #[cfg(windows)]
+            Page::Market => self.gold.show(ui, store.directory()),
+            #[cfg(windows)]
+            Page::Files => self.tools.render(ui, store.directory()),
+            #[cfg(windows)]
+            Page::Performance => self.performance.show(ui, store),
+            #[cfg(windows)]
+            Page::Clipboard => self.clipboard.show(ui, store.directory()),
+            #[cfg(windows)]
+            Page::Wireless => self.wireless.show(ui),
+            #[cfg(windows)]
+            Page::Plugins => self.plugins.show(ui, store.directory(), || {
+                crate::windows::open_file(crate::windows::FileKind::Json)
+            }),
+            Page::Settings => unreachable!("settings own their category scroll area"),
+        }
     }
 
     fn notifications(&mut self, ui: &mut Ui, store: &mut Store) {
