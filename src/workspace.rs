@@ -143,6 +143,8 @@ pub struct Task {
     pub importance: Option<Importance>,
     #[serde(default)]
     pub urgency: Option<Urgency>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     pub notes: String,
     pub created_at: i64,
     pub completed_at: Option<i64>,
@@ -315,6 +317,11 @@ pub struct DesktopTodoSettings {
     pub open: bool,
     pub pinned: bool,
     pub bounds: Option<DesktopTodoBounds>,
+    pub summary_enabled: bool,
+    pub summary_minute: u16,
+    pub summary_weekdays: bool,
+    pub show_metadata: bool,
+    pub group_categories: bool,
     pub bubble_visible: bool,
     pub bubble_position: Option<[i32; 2]>,
 }
@@ -325,6 +332,11 @@ impl Default for DesktopTodoSettings {
             open: false,
             pinned: true,
             bounds: None,
+            summary_enabled: false,
+            summary_minute: 17 * 60,
+            summary_weekdays: false,
+            show_metadata: true,
+            group_categories: true,
             bubble_visible: true,
             bubble_position: None,
         }
@@ -393,6 +405,8 @@ pub struct Workspace {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub calendar_sources: Vec<CalendarSource>,
     pub tasks: Vec<Task>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub todo_category_order: Vec<String>,
     pub focus: Focus,
     #[serde(default, skip_serializing_if = "HealthReminders::is_default")]
     pub health: HealthReminders,
@@ -423,6 +437,7 @@ impl Default for Workspace {
             events: Vec::new(),
             calendar_sources: Vec::new(),
             tasks: Vec::new(),
+            todo_category_order: Vec::new(),
             focus: Focus::default(),
             health: HealthReminders::default(),
             notes: String::new(),
@@ -457,9 +472,20 @@ impl Workspace {
         calendar_sources::validate(&self.calendar_sources)?;
         self.settings.dock.validate()?;
         self.health.validate()?;
+        if self.settings.desktop_todo.summary_minute >= 1440
+            || self.todo_category_order.len() > MAX_RECORDS + 4
+            || self
+                .todo_category_order
+                .iter()
+                .any(|name| !valid_title(name, 64))
+        {
+            return Err("待办设置无效。".into());
+        }
         for task in &self.tasks {
             if !valid_title(&task.title, 500)
                 || !valid_title(&task.category, 64)
+                || task.tags.len() > 10
+                || task.tags.iter().any(|tag| !valid_title(tag, 64))
                 || length(&task.notes) > 10_000
                 || !valid_timestamp(task.created_at)
                 || !task.due_at.is_none_or(valid_timestamp)
@@ -672,6 +698,7 @@ impl TryFrom<LegacyTask> for Task {
             priority: task.priority,
             importance: task.importance,
             urgency: task.urgency,
+            tags: Vec::new(),
             notes: task.notes,
             created_at: task.created_at,
             completed_at: task.completed_at.filter(|_| task.completed),
@@ -867,10 +894,39 @@ impl Store {
                 .next_at(now)
                 .into_iter()
                 .chain(self.next_health_reminder_at())
+                .chain(self.next_todo_summary(now).map(|(at, _)| at))
                 .min()
         } else {
             Some(now)
         }
+    }
+
+    fn next_todo_summary(&self, now: i64) -> Option<(i64, String)> {
+        use chrono::{Datelike, TimeZone};
+        let prefs = self.state.settings.desktop_todo;
+        if !self.state.settings.reminders || !prefs.summary_enabled {
+            return None;
+        }
+        let today = todo::local_date(now)?;
+        for day in 0..8 {
+            let date = today.checked_add_days(chrono::Days::new(day))?;
+            if prefs.summary_weekdays && date.weekday().num_days_from_monday() >= 5 {
+                continue;
+            }
+            let minute = u32::from(prefs.summary_minute);
+            let local = date.and_hms_opt(minute / 60, minute % 60, 0)?;
+            let Some(time) = chrono::Local.from_local_datetime(&local).earliest() else {
+                continue;
+            };
+            let at = time.timestamp_millis();
+            let key = format!("todo-summary:{date}:{minute}");
+            if at >= now.saturating_sub(30 * 60_000)
+                && !self.state.delivered_reminder_ids.contains(&key)
+            {
+                return Some((at, key));
+            }
+        }
+        None
     }
 
     pub fn next_health_reminder_at(&self) -> Option<i64> {
@@ -896,6 +952,33 @@ impl Store {
         if let Some((ids, reminder)) = self.schedule.due(now) {
             if send(&reminder) {
                 self.save_notification(now, ids, reminder)?;
+            }
+        } else if let Some((_, key)) = self.next_todo_summary(now).filter(|(at, _)| *at <= now) {
+            let date = todo::local_date(now).expect("scheduled summary has a valid local date");
+            let count = self
+                .state
+                .tasks
+                .iter()
+                .filter(|task| {
+                    matches!(
+                        task.status_on(date),
+                        TaskStatus::Active | TaskStatus::Deferred
+                    )
+                })
+                .count();
+            if count == 0 {
+                self.update(|state| {
+                    reminders::mark_delivered(&mut state.delivered_reminder_ids, vec![key]);
+                    Ok(())
+                })?;
+            } else {
+                let reminder = Reminder {
+                    title: "待办汇总".into(),
+                    body: format!("还有 {count} 项待办未完成"),
+                };
+                if send(&reminder) {
+                    self.save_notification(now, vec![key], reminder)?;
+                }
             }
         } else if self.state.settings.reminders {
             if self.state.health.deadlines().any(|(_, at)| at <= now)

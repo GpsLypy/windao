@@ -1,7 +1,7 @@
 use super::{card, primary, subhead};
 use crate::workspace::{Card, Event, MeetingNote, Store};
 use chrono::{DateTime, Local, Utc};
-use eframe::egui::{RichText, TextEdit, Ui};
+use eframe::egui::{self, RichText, TextEdit, Ui};
 use uuid::Uuid;
 
 #[derive(Default, PartialEq, Eq)]
@@ -18,6 +18,23 @@ pub struct ExtraNotes {
     card_draft: Option<Card>,
     meeting_draft: Option<MeetingNote>,
     notice: Option<Result<String, String>>,
+}
+
+pub(super) fn editor(ui: &mut Ui, edit: TextEdit<'_>, label: &str, height: f32) {
+    let height = height.max(28.0);
+    let rows = ((height - 10.0) / ui.text_style_height(&egui::TextStyle::Body))
+        .floor()
+        .max(1.0) as usize;
+    egui::ScrollArea::vertical()
+        .id_salt(label)
+        .min_scrolled_height(0.0)
+        .max_height(height)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let response = ui.add(edit.desired_width(f32::INFINITY).desired_rows(rows));
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, label));
+        });
 }
 
 impl ExtraNotes {
@@ -74,24 +91,28 @@ impl ExtraNotes {
         card(ui, |ui| {
             ui.add(
                 TextEdit::multiline(&mut draft.title)
+                    .desired_width(f32::INFINITY)
                     .hint_text("卡片标题")
                     .char_limit(240)
                     .desired_rows(1),
             );
-            ui.add(
-                TextEdit::multiline(&mut draft.text)
-                    .hint_text("卡片正文")
-                    .desired_rows(9)
-                    .char_limit(100_000)
-                    .desired_width(f32::INFINITY),
-            );
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 save = primary(ui, "保存卡片").clicked();
                 if saved {
                     ui.menu_button("删除卡片", |ui| {
                         delete = ui.button("确认删除").clicked();
                     });
                 }
+            });
+            ui.push_id(&draft.id, |ui| {
+                editor(
+                    ui,
+                    TextEdit::multiline(&mut draft.text)
+                        .hint_text("卡片正文")
+                        .char_limit(100_000),
+                    "卡片正文",
+                    ui.available_height(),
+                );
             });
         });
         if delete {
@@ -181,14 +202,7 @@ impl ExtraNotes {
         card(ui, |ui| {
             ui.label(RichText::new(&draft.title).strong());
             ui.weak(date_time(draft.starts_at));
-            ui.add(
-                TextEdit::multiline(&mut draft.body)
-                    .hint_text("会议记录")
-                    .desired_rows(10)
-                    .char_limit(20_000)
-                    .desired_width(f32::INFINITY),
-            );
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 save = primary(ui, "保存笔记").clicked();
                 #[cfg(windows)]
                 if draft.updated_at != 0 && ui.button("导出 Markdown").clicked() {
@@ -199,6 +213,16 @@ impl ExtraNotes {
                         delete = ui.button("确认删除").clicked();
                     });
                 }
+            });
+            ui.push_id(&draft.key, |ui| {
+                editor(
+                    ui,
+                    TextEdit::multiline(&mut draft.body)
+                        .hint_text("会议记录")
+                        .char_limit(20_000),
+                    "会议笔记正文",
+                    ui.available_height(),
+                );
             });
         });
         if delete {

@@ -367,6 +367,7 @@ fn parse_checklist(data: &str, now: i64) -> Result<Checklist> {
             priority: Priority::None,
             importance: None,
             urgency: None,
+            tags: Vec::new(),
             notes: String::new(),
             created_at: now,
             completed_at: done
@@ -559,5 +560,58 @@ mod tests {
             tasks[1].next_scheduled_on(day("2027-02-01")),
             Some(day("2027-02-28"))
         );
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+    #[test]
+    fn weekday_summary_counts_unfinished_retries_and_deduplicates_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().into()).unwrap();
+        let at = Local
+            .with_ymd_and_hms(2026, 11, 27, 17, 0, 0)
+            .earliest()
+            .unwrap()
+            .timestamp_millis();
+        store
+            .update(|s| {
+                s.settings.desktop_todo.summary_enabled = true;
+                s.settings.desktop_todo.summary_weekdays = true;
+                for status in [
+                    TaskStatus::Active,
+                    TaskStatus::Deferred,
+                    TaskStatus::Completed,
+                    TaskStatus::Cancelled,
+                ] {
+                    let mut task: Task = serde_json::from_value(serde_json::json!({
+                        "id": Uuid::new_v4(), "title": "记录", "category": "none",
+                        "status": "active", "priority": "none", "notes": "", "createdAt": at
+                    }))
+                    .unwrap();
+                    task.set_status(status, at);
+                    s.tasks.push(task);
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.next_reminder_at(at - 1), Some(at));
+        store.deliver_due_reminders(at, |_| false).unwrap();
+        assert_eq!(store.next_reminder_at(at), Some(at));
+        store
+            .deliver_due_reminders(at, |r| {
+                assert_eq!(r.body, "还有 2 项待办未完成");
+                true
+            })
+            .unwrap();
+        drop(store);
+        let store = Store::open(dir.path().into()).unwrap();
+        let monday = Local
+            .with_ymd_and_hms(2026, 11, 30, 17, 0, 0)
+            .earliest()
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(store.next_reminder_at(at), Some(monday));
     }
 }

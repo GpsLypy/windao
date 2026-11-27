@@ -343,7 +343,6 @@ pub(crate) fn draw(
             });
             panel.set_clip_rect(panel.clip_rect().intersect(body).intersect(content));
             panel.set_opacity(panel_opacity);
-            scale_style(&mut panel, options.scale);
             let action = expanded_content(
                 &mut panel,
                 store,
@@ -900,7 +899,16 @@ fn expanded_content(
     #[cfg(windows)] sources: &mut FeatureSources,
 ) -> Option<ShellAction> {
     let tone = Palette::from_ui(ui);
-    let s = options.scale;
+    // Use the final content bounds throughout a morph. Only a real window resize
+    // should change the size of controls or cause the panel to change columns.
+    let reference = if options.dock.is_horizontal() {
+        vec2(596.0, 290.0)
+    } else {
+        vec2(362.0, 468.0)
+    };
+    let room = ui.max_rect().size() / reference;
+    let s = room.x.min(room.y).clamp(options.scale, 1.4 * options.scale);
+    scale_style(ui, s);
     let now = Local::now();
     let date = now.date_naive();
     let mut action = None;
@@ -1273,11 +1281,9 @@ fn expanded_content(
                 #[cfg(windows)]
                 Page::Music => state.player.capsule(ui, &mut sources.media, s),
                 Page::Focus => {
-                    let dial_size = if ui.available_width() < 360.0 * s {
-                        84.0
-                    } else {
-                        120.0
-                    };
+                    let dial_size = (ui.available_width() * 0.30)
+                        .min(height)
+                        .clamp(76.0 * s, 220.0 * s);
                     let timer = &workspace.focus;
                     let seconds = timer.seconds_left(now.timestamp_millis());
                     let tint = focus::session_color(
@@ -1350,7 +1356,7 @@ fn expanded_content(
                             timer.duration_minutes,
                             focus::status(timer),
                             tint,
-                            dial_size * s,
+                            dial_size,
                         );
                     };
                     if ui.available_width() >= 210.0 * s {

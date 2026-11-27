@@ -25,6 +25,7 @@ mod calendar;
 pub(crate) mod capsule;
 #[cfg(windows)]
 mod clipboard;
+mod clipboard_row;
 mod controls;
 mod dates;
 pub(crate) mod desktop_todo;
@@ -1033,7 +1034,6 @@ impl Workbench {
         let shortcut = ui.is_enabled()
             && ui.memory(|memory| memory.has_focus(id))
             && ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S));
-        let mut save = false;
         let toolbar = |ui: &mut Ui| {
             ui.horizontal(|ui| {
                 let pressed = ui
@@ -1048,36 +1048,19 @@ impl Workbench {
             })
             .inner
         };
-        let mut edit = |ui: &mut Ui, rows| {
-            let response = ui.add(
-                TextEdit::multiline(draft)
-                    .id(id)
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(rows)
-                    .hint_text("记下随手想法…")
-                    .char_limit(crate::workspace::MAX_NOTES),
-            );
-            response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "编辑便笺")
-            });
-        };
-        if let Some(height) = panel_height {
-            save = toolbar(ui);
-            let editor_height =
-                (height - ui.spacing().interact_size.y - ui.spacing().item_spacing.y).max(28.0);
-            let line = ui.text_style_height(&TextStyle::Body);
-            let rows = ((editor_height - 10.0) / line).floor().max(2.0) as usize;
-            ScrollArea::vertical()
-                .id_salt("capsule-scratchpad")
-                .max_height(editor_height)
-                .auto_shrink([false, false])
-                .show(ui, |ui| edit(ui, rows));
-        } else {
-            edit(ui, 12);
-        }
-        if panel_height.is_none() {
-            save = toolbar(ui);
-        }
+        let height = panel_height.unwrap_or_else(|| ui.available_height());
+        let top = ui.cursor().top();
+        let save = toolbar(ui);
+        let remaining = height - (ui.cursor().top() - top);
+        notes_extra::editor(
+            ui,
+            TextEdit::multiline(draft)
+                .id(id)
+                .hint_text("记下随手想法…")
+                .char_limit(crate::workspace::MAX_NOTES),
+            "编辑便笺",
+            remaining,
+        );
         (changed && (save || shortcut)).then(|| {
             store.update(|state| {
                 state.notes.clone_from(draft);

@@ -268,112 +268,115 @@ impl Calendar {
         let next_month = first.checked_add_months(Months::new(1)).unwrap_or(first);
         let days = (next_month - first).num_days();
         let weeks = (offset + days + 6) / 7;
-        let scale = capsule_layout.map_or(1.0, |(scale, height)| {
-            let remaining = height - (ui.cursor().top() - top);
-            let grid_height = 16.0 + 23.0 * weeks as f32;
-            scale.min((remaining / grid_height).max(0.72))
-        });
-        let gap = if compact { 2.0 * scale } else { 4.0 };
-        let size = vec2(
-            ((ui.available_width() - 6.0 * gap) / 7.0).max(18.0 * scale),
-            if compact { 22.0 * scale } else { 24.0 },
-        );
-        egui::Grid::new("month-grid")
-            .min_col_width(0.0)
-            .min_row_height(0.0)
-            .spacing(vec2(gap, if compact { scale } else { 3.0 }))
-            .show(ui, |ui| {
-                for label in ["日", "一", "二", "三", "四", "五", "六"] {
-                    ui.add_sized(
-                        vec2(size.x, if compact { 16.0 * scale } else { 20.0 }),
-                        egui::Label::new(RichText::new(label).small().weak())
-                            .halign(egui::Align::Center),
-                    );
-                }
-                ui.end_row();
-                for column in 0..weeks {
-                    for row in 0..7 {
-                        let position = column * 7 + row - offset;
-                        if !(0..days).contains(&position) {
-                            ui.allocate_space(size);
-                            continue;
-                        }
-                        let date = first
-                            .checked_add_days(Days::new(position as u64))
-                            .unwrap_or(first);
-                        let marked = events.iter().any(|event| on_date(event, date));
-                        let selected = date == self.date;
-                        let color = if ui.visuals().dark_mode {
-                            egui::Color32::from_rgb(239, 174, 158)
-                        } else {
-                            egui::Color32::from_rgb(154, 66, 47)
-                        };
-                        let (rect, mut response) =
-                            ui.allocate_exact_size(size, egui::Sense::click());
-                        let center = rect.center() - vec2(0.0, scale);
-                        if selected || response.hovered() {
-                            ui.painter().circle_filled(
-                                center,
-                                10.0 * scale,
-                                if selected {
-                                    color
-                                } else {
-                                    ui.visuals().widgets.hovered.weak_bg_fill
-                                },
-                            );
-                        }
-                        if date == today || response.has_focus() {
-                            ui.painter().circle_stroke(
-                                center,
-                                11.0 * scale,
-                                egui::Stroke::new(1.0_f32, color),
-                            );
-                        }
-                        let ink = if selected && ui.visuals().dark_mode {
-                            egui::Color32::BLACK
-                        } else if selected {
-                            egui::Color32::WHITE
-                        } else {
-                            ui.visuals().text_color()
-                        };
-                        ui.painter().text(
-                            center,
-                            egui::Align2::CENTER_CENTER,
-                            date.day().to_string(),
-                            egui::FontId::proportional(13.0 * scale),
-                            ink,
-                        );
-                        response.widget_info(|| {
-                            egui::WidgetInfo::selected(
-                                egui::WidgetType::Button,
-                                true,
-                                selected,
-                                date.to_string(),
-                            )
-                        });
-                        if marked {
-                            ui.painter().circle_filled(
-                                response.rect.center_bottom() - vec2(0.0, 2.0 * scale),
-                                1.5 * scale,
-                                color,
-                            );
-                        }
-                        let mut tooltip = date.format("%Y年%-m月%-d日").to_string();
-                        if marked {
-                            tooltip.push_str(" · 有日程");
-                        }
-                        if let Some(lunar) = lunar_caption(date) {
-                            tooltip.push('\n');
-                            tooltip.push_str(&lunar);
-                        }
-                        response = response.on_hover_text(tooltip);
-                        if response.clicked() {
-                            self.select_date(date);
-                        }
-                    }
-                    ui.end_row();
-                }
+        let (base, remaining) = capsule_layout
+            .map_or((1.0, ui.available_height()), |(scale, height)| {
+                (scale, height - (ui.cursor().top() - top))
             });
+        let gap = if compact { 2.0 * base } else { 4.0 };
+        let header = 16.0 * base;
+        let width = ((ui.available_width() - 6.0 * gap) / 7.0).max(1.0);
+        let height = ((remaining - header) / weeks as f32 - gap)
+            .min(width)
+            .clamp(17.0 * base, 64.0 * base);
+        let scale = (height.min(width) / 22.0).clamp(0.72 * base, 1.35 * base);
+        let (grid, _) = ui.allocate_exact_size(
+            vec2(
+                7.0 * width + 6.0 * gap,
+                header + weeks as f32 * (height + gap),
+            ),
+            egui::Sense::hover(),
+        );
+        for (index, label) in ["日", "一", "二", "三", "四", "五", "六"]
+            .iter()
+            .enumerate()
+        {
+            let origin = grid.min + vec2(index as f32 * (width + gap), 0.0);
+            ui.place(
+                egui::Rect::from_min_size(origin, vec2(width, header)),
+                egui::Label::new(RichText::new(*label).small().weak()).halign(egui::Align::Center),
+            );
+        }
+        for day in 0..days {
+            let date = first
+                .checked_add_days(Days::new(day as u64))
+                .unwrap_or(first);
+            let marked = events.iter().any(|event| on_date(event, date));
+            let selected = date == self.date;
+            let color = if ui.visuals().dark_mode {
+                egui::Color32::from_rgb(239, 174, 158)
+            } else {
+                egui::Color32::from_rgb(154, 66, 47)
+            };
+            let cell = offset + day;
+            let origin = grid.min
+                + vec2(
+                    (cell % 7) as f32 * (width + gap),
+                    header + gap + (cell / 7) as f32 * (height + gap),
+                );
+            let rect = egui::Rect::from_min_size(origin, vec2(width, height));
+            let mut response = ui.interact(
+                rect,
+                ui.id().with(("month-day", date)),
+                egui::Sense::click(),
+            );
+            let center = rect.center() - vec2(0.0, scale);
+            if selected || response.hovered() {
+                ui.painter().circle_filled(
+                    center,
+                    10.0 * scale,
+                    if selected {
+                        color
+                    } else {
+                        ui.visuals().widgets.hovered.weak_bg_fill
+                    },
+                );
+            }
+            if date == today || response.has_focus() {
+                ui.painter()
+                    .circle_stroke(center, 11.0 * scale, egui::Stroke::new(1.0_f32, color));
+            }
+            let ink = if selected && ui.visuals().dark_mode {
+                egui::Color32::BLACK
+            } else if selected {
+                egui::Color32::WHITE
+            } else {
+                ui.visuals().text_color()
+            };
+            ui.painter().text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                date.day().to_string(),
+                egui::FontId::proportional(13.0 * scale),
+                ink,
+            );
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::Button,
+                    true,
+                    selected,
+                    date.to_string(),
+                )
+            });
+            if marked {
+                ui.painter().circle_filled(
+                    response.rect.center_bottom() - vec2(0.0, 2.0 * scale),
+                    1.5 * scale,
+                    color,
+                );
+            }
+            let mut tooltip = date.format("%Y年%-m月%-d日").to_string();
+            if marked {
+                tooltip.push_str(" · 有日程");
+            }
+            if let Some(lunar) = lunar_caption(date) {
+                tooltip.push('\n');
+                tooltip.push_str(&lunar);
+            }
+            response = response.on_hover_text(tooltip);
+            if response.clicked() {
+                self.select_date(date);
+            }
+        }
     }
 
     fn agenda(

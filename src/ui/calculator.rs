@@ -146,7 +146,7 @@ impl Calculator {
             self.keyboard(ui);
         }
         let compact = super::in_capsule(ui);
-        let wide = ui.available_width() >= if compact { 210.0 } else { 440.0 };
+        let wide = ui.available_width() >= if compact { 330.0 } else { 440.0 };
         if wide {
             ui.columns(2, |columns| {
                 self.result(&mut columns[0]);
@@ -236,15 +236,16 @@ impl Calculator {
 
     fn keypad(&mut self, ui: &mut Ui) {
         let compact = super::in_capsule(ui);
-        let height = if compact { 25.0 } else { 31.0 };
         if compact {
             ui.spacing_mut().item_spacing = vec2(4.0, 3.0);
             ui.spacing_mut().button_padding.x = 1.0;
             ui.spacing_mut().interact_size.y = 25.0;
         }
         let gap = ui.spacing().item_spacing.x;
-        let width = ((ui.available_width() - gap * 3.0) / 4.0)
-            .clamp(if compact { 18.0 } else { 24.0 }, 68.0);
+        let width = ((ui.available_width() - gap * 3.0) / 4.0).max(1.0);
+        let height = ((ui.available_height() - 4.0 * ui.spacing().item_spacing.y) / 5.0)
+            .min(width)
+            .clamp(if compact { 25.0 } else { 31.0 }, 76.0);
         for row in [
             ["AC", "+/−", "%", "÷"],
             ["7", "8", "9", "×"],

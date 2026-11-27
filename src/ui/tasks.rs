@@ -1,3 +1,4 @@
+pub(super) mod compact;
 use chrono::{Datelike, Days, Local, NaiveDate};
 use eframe::egui::{self, RichText, TextEdit, Ui};
 use uuid::Uuid;
@@ -32,6 +33,8 @@ pub(super) struct Tasks {
     pub(super) open_desktop: bool,
     draft: Option<TaskDraft>,
     delete: Option<Uuid>,
+    hide_metadata: bool,
+    grouped: bool,
 }
 
 impl Tasks {
@@ -216,17 +219,7 @@ impl Tasks {
             View::Statistics => self.statistics(ui, &tasks),
         }
         if let Some(change) = change {
-            let result = store.update(|state| {
-                match change {
-                    Change::Status(id, status) => {
-                        if let Some(task) = state.tasks.iter_mut().find(|task| task.id == id) {
-                            task.set_status(status, now);
-                        }
-                    }
-                    Change::Remove(id) => state.tasks.retain(|task| task.id != id),
-                }
-                Ok(())
-            });
+            let result = change.apply(store, now);
             if result.is_ok() {
                 self.delete = None;
             }
@@ -257,48 +250,53 @@ impl Tasks {
         notice: &mut Option<Result<String, String>>,
     ) {
         ui.horizontal(|ui| {
-            let input = ui.add(
-                TextEdit::singleline(&mut self.quick_title)
-                    .hint_text("写下待办，回车添加")
-                    .margin(egui::Margin::symmetric(9, 6))
-                    .char_limit(500)
-                    .desired_width((ui.available_width() - 146.0).max(72.0)),
-            );
-            let enter = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            let add = ui
-                .add_enabled_ui(!self.quick_title.trim().is_empty(), |ui| {
-                    primary(ui, "添加")
-                })
-                .inner
-                .clicked();
-            if (add || enter) && !self.quick_title.trim().is_empty() {
-                let result = quick_task(&self.quick_title).and_then(|task| {
-                    let id = task.id;
-                    store.update(|state| {
-                        state.tasks.push(task);
-                        Ok(())
-                    })?;
-                    Ok(id)
-                });
-                match result {
-                    Ok(id) => {
-                        self.quick_title.clear();
-                        if let Some(task) = store.state().tasks.iter().find(|task| task.id == id) {
-                            let time = Local::now();
-                            self.reveal(task, time.date_naive(), time.timestamp_millis());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let details = ui.button("详细添加").clicked();
+                let add = ui
+                    .add_enabled_ui(!self.quick_title.trim().is_empty(), |ui| {
+                        primary(ui, "添加")
+                    })
+                    .inner
+                    .clicked();
+                let input = ui.add(
+                    TextEdit::singleline(&mut self.quick_title)
+                        .hint_text("写下待办，回车添加")
+                        .margin(egui::Margin::symmetric(9, 6))
+                        .char_limit(500)
+                        .desired_width(ui.available_width()),
+                );
+                let enter = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (add || enter) && !self.quick_title.trim().is_empty() {
+                    let result = quick_task(&self.quick_title).and_then(|task| {
+                        let id = task.id;
+                        store.update(|state| {
+                            state.tasks.push(task);
+                            Ok(())
+                        })?;
+                        Ok(id)
+                    });
+                    match result {
+                        Ok(id) => {
+                            self.quick_title.clear();
+                            if let Some(task) =
+                                store.state().tasks.iter().find(|task| task.id == id)
+                            {
+                                let time = Local::now();
+                                self.reveal(task, time.date_naive(), time.timestamp_millis());
+                            }
+                            *notice = None;
                         }
-                        *notice = None;
+                        Err(error) => *notice = Some(Err(error)),
                     }
-                    Err(error) => *notice = Some(Err(error)),
+                    input.request_focus();
                 }
-                input.request_focus();
-            }
-            if ui.button("详细添加").clicked() {
-                self.draft = Some(TaskDraft {
-                    name: self.quick_title.clone(),
-                    ..Default::default()
-                });
-            }
+                if details {
+                    self.draft = Some(TaskDraft {
+                        name: self.quick_title.clone(),
+                        ..Default::default()
+                    });
+                }
+            });
         });
         ui.add_space(6.0);
     }
@@ -334,6 +332,19 @@ impl Tasks {
                                     if ui.button("编辑").clicked() {
                                         self.draft = Some(TaskDraft::from_task(task));
                                         ui.close();
+                                    }
+                                    for (next, label) in [
+                                        (TaskStatus::Active, "恢复待办"),
+                                        (TaskStatus::Deferred, "暂缓处理"),
+                                        (TaskStatus::Cancelled, "取消待办"),
+                                    ] {
+                                        if next != status
+                                            && (!task.repeat.is_repeating() || date == today)
+                                            && ui.button(label).clicked()
+                                        {
+                                            *change = Some(Change::Status(task.id, next));
+                                            ui.close();
+                                        }
                                     }
                                     if self.delete == Some(task.id) {
                                         if ui.button("确认删除").clicked() {
@@ -385,7 +396,11 @@ impl Tasks {
                             );
                         });
                     });
-                    let mut metadata = Vec::new();
+                    if self.hide_metadata {
+                        return;
+                    }
+                    let mut metadata: Vec<String> =
+                        task.tags.iter().map(|tag| format!("#{tag}")).collect();
                     if !scheduled {
                         metadata.push("今天无需处理".into());
                     } else if matches!(status, TaskStatus::Deferred | TaskStatus::Cancelled) {
@@ -397,7 +412,7 @@ impl Tasks {
                     if task.priority != Priority::None {
                         metadata.push(priority_label(task.priority).into());
                     }
-                    if !task.category.is_empty() && task.category != "none" {
+                    if !self.grouped && !task.category.is_empty() && task.category != "none" {
                         metadata.push(category_label(&task.category).into());
                     }
                     if self.view == View::List {
@@ -600,6 +615,10 @@ pub(super) fn quick_task(title: &str) -> Result<Task, String> {
 
 fn matches_query(task: &Task, query: &str) -> bool {
     query.is_empty()
+        || task
+            .tags
+            .iter()
+            .any(|tag| tag.to_lowercase().contains(query))
         || [
             &task.title,
             &task.category,
@@ -782,6 +801,23 @@ enum Change {
     Remove(Uuid),
 }
 
+impl Change {
+    fn apply(self, store: &mut Store, now: i64) -> Result<(), String> {
+        store.update(|state| {
+            match self {
+                Self::Status(id, status) => state
+                    .tasks
+                    .iter_mut()
+                    .find(|task| task.id == id)
+                    .ok_or("该待办已删除。")?
+                    .set_status(status, now),
+                Self::Remove(id) => state.tasks.retain(|task| task.id != id),
+            }
+            Ok(())
+        })
+    }
+}
+
 #[derive(Default)]
 struct TaskDraft {
     original: Option<Task>,
@@ -796,6 +832,7 @@ struct TaskDraft {
     reminder_minutes: Vec<u32>,
     repeat: TaskRepeat,
     notes: String,
+    tags: String,
 }
 
 impl TaskDraft {
@@ -819,6 +856,7 @@ impl TaskDraft {
             reminders_disabled: task.reminders_disabled,
             reminder_minutes: task.reminder_minutes.clone(),
             repeat: task.repeat,
+            tags: task.tags.join("，"),
             notes: task.notes.clone(),
         }
     }
@@ -914,6 +952,7 @@ impl TaskDraft {
                 }
             });
         }
+        field(ui, "标签", &mut self.tags, "多个标签用逗号分隔", 650);
         let label = ui.label("备注");
         ui.add(
             TextEdit::multiline(&mut self.notes)
@@ -1018,6 +1057,7 @@ impl TaskDraft {
             importance: None,
             urgency: None,
             due_at: None,
+            tags: Vec::new(),
             notes: String::new(),
             created_at: now,
             completed_at: None,
@@ -1068,6 +1108,20 @@ impl TaskDraft {
             Vec::new()
         };
         task.reminders_disabled = self.reminders_disabled;
+        task.tags.clear();
+        for tag in self
+            .tags
+            .split([',', '，'])
+            .map(str::trim)
+            .filter(|tag| !tag.is_empty())
+        {
+            if !task.tags.iter().any(|t| t == tag) {
+                task.tags.push(tag.to_owned());
+            }
+        }
+        if task.tags.len() > 10 || task.tags.iter().any(|tag| tag.encode_utf16().count() > 64) {
+            return Err("最多可添加 10 个标签，每个限 64 字。".into());
+        }
         task.notes.clone_from(&self.notes);
         task.set_status(self.status, now);
         Ok(task)
